@@ -1,0 +1,8 @@
+anthropic>=0.40.0
+trimesh>=4.0.0
+numpy>=1.24.0
+Pillow>=10.0.0
+python-dotenv>=1.0.0
+rich>=13.7.0
+click>=8.1.0
+numpy-stl>=3.0.0
