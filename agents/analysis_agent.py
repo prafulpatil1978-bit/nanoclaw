@@ -8,9 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import anthropic
-
 from utils.file_utils import load_image_as_base64
+from utils.llm_client import build_client, resolve_model
 
 
 @dataclass
@@ -73,8 +72,10 @@ Do not include markdown, code fences, or any text outside the JSON.\
 
 class AnalysisAgent:
     def __init__(self, model: str | None = None) -> None:
-        self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-        self.model = model or os.environ.get("ANALYSIS_MODEL", "claude-opus-4-7")
+        self._unified = build_client()
+        self.client = self._unified
+        _requested = model or os.environ.get("ANALYSIS_MODEL", "claude-opus-4-7")
+        self.model = resolve_model(_requested, self._unified.messages._provider)
 
     def analyse(
         self,

@@ -8,10 +8,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import anthropic
-
 from agents.analysis_agent import ObjectDescription
 from tools.openscad_tools import OpenSCADTools
+from utils.llm_client import build_client, resolve_model
 
 
 @dataclass
@@ -104,8 +103,10 @@ class DesignAgent:
     MAX_ITERATIONS = 20
 
     def __init__(self, work_dir: str | Path, model: str | None = None) -> None:
-        self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-        self.model = model or os.environ.get("DESIGN_MODEL", "claude-opus-4-7")
+        self._unified = build_client()
+        self.client = self._unified
+        _requested = model or os.environ.get("DESIGN_MODEL", "claude-opus-4-7")
+        self.model = resolve_model(_requested, self._unified.messages._provider)
         self.work_dir = Path(work_dir)
         self.osc = OpenSCADTools(work_dir=work_dir)
 
