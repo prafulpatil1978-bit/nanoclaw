@@ -38,42 +38,68 @@ def cli() -> None:
 @click.option("--description", "-d", default=None, help="Text description of the object.")
 @click.option("--image", "-i", default=None, type=click.Path(exists=True), help="Path to a sketch or photo.")
 @click.option("--output", "-o", default="./output", show_default=True, help="Output root directory.")
+@click.option(
+    "--mode", "-m",
+    type=click.Choice(["auto", "parametric", "mesh"]),
+    default="auto",
+    show_default=True,
+    help=(
+        "auto: pick based on object type  |  "
+        "parametric: OpenSCAD (mechanical parts)  |  "
+        "mesh: Meshy.ai (organic / artistic shapes)"
+    ),
+)
 @click.option("--analysis-model", default=None, help="Claude model for analysis stage.")
 @click.option("--design-model", default=None, help="Claude model for design stage.")
 def generate(
     description: str | None,
     image: str | None,
     output: str,
+    mode: str,
     analysis_model: str | None,
     design_model: str | None,
 ) -> None:
-    """Run the full pipeline: analyse → design → partition → package."""
+    """Run the full pipeline: analyse → design → partition → package.
+
+    \b
+    Modes:
+      auto        Choose automatically (organic → mesh, mechanical → parametric)
+      parametric  OpenSCAD-based — best for boxes, brackets, functional parts
+      mesh        Meshy.ai AI mesh — best for characters, animals, sculptures
+    """
     _check_api_key()
 
     if not description and not image:
         console.print("[bold red]Error:[/] Provide --description and/or --image.")
         sys.exit(1)
 
+    mode_labels = {
+        "auto": "Auto-detect",
+        "parametric": "Parametric (OpenSCAD)",
+        "mesh": "AI Mesh (Meshy.ai)",
+    }
     console.print(
         Panel.fit(
-            "[bold cyan]nanoclaw[/] AI 3D Printing Pipeline",
+            f"[bold cyan]nanoclaw[/] AI 3D Printing Pipeline\n"
+            f"[dim]Mode: {mode_labels[mode]}[/]",
             subtitle="sketch → STL package",
         )
     )
 
     from pipeline import Pipeline
 
-    stages: dict[str, str] = {}
-
     def on_progress(stage: str, message: str) -> None:
-        stages[stage] = message
-        icons = {"analyse": "🔍", "design": "✏️", "partition": "✂️", "package": "📦"}
+        icons = {
+            "analyse": "🔍", "mode": "⚙️", "design": "✏️",
+            "partition": "✂️", "package": "📦",
+        }
         icon = icons.get(stage, "•")
         console.print(f"  {icon}  [bold]{stage.capitalize()}:[/] {message}")
 
     try:
         pipeline = Pipeline(
             output_root=output,
+            mode=mode,
             analysis_model=analysis_model,
             design_model=design_model,
         )
@@ -94,9 +120,15 @@ def _print_summary(result) -> None:
 
     obj = result.object_description
     pkg = result.package
+    mode = getattr(result, "mode_used", "parametric")
 
     console.print()
-    console.print(Panel.fit(f"[bold green]Done![/] {obj.name}", subtitle="Package Summary"))
+    console.print(
+        Panel.fit(
+            f"[bold green]Done![/] {obj.name}",
+            subtitle=f"Mode: {mode} | Package Summary",
+        )
+    )
 
     # Parts table
     table = Table(title="Parts", show_header=True)
