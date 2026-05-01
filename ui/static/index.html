@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nanoclaw — AI 3D Print Pipeline</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="logo">🐾 Nanoclaw</div>
+    <p class="tagline">Sketch → AI Analysis → 3D Model → Print-Ready STL Package</p>
+  </header>
+
+  <main>
+    <!-- ── Input panel ── -->
+    <section class="panel" id="input-panel">
+      <h2>New Job</h2>
+
+      <div id="drop-zone" class="drop-zone">
+        <p>Drag &amp; drop an image here, or click to browse</p>
+        <input type="file" id="file-input" accept="image/*" hidden />
+        <img id="preview" class="preview" hidden />
+      </div>
+
+      <label class="field-label" for="description">Description (required if no image)</label>
+      <textarea id="description" rows="3"
+        placeholder="e.g. A wall-mounted bracket for a 25 mm pipe, 3 mm steel rod attachment point"></textarea>
+
+      <div class="row">
+        <div class="field">
+          <label for="mode">Pipeline mode</label>
+          <select id="mode">
+            <option value="auto" selected>Auto (recommended)</option>
+            <option value="partgen">Part-gen (CadQuery templates)</option>
+            <option value="parametric">Parametric (OpenSCAD)</option>
+            <option value="mesh">Mesh (AI-generated)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="backend">Mesh backend</label>
+          <select id="backend">
+            <option value="tripo3d" selected>Tripo3D (cloud, free tier)</option>
+            <option value="shape-e">Shap-E (local, free)</option>
+            <option value="meshy">Meshy (cloud, paid)</option>
+          </select>
+        </div>
+      </div>
+
+      <button id="generate-btn" class="btn-primary">Generate</button>
+    </section>
+
+    <!-- ── Progress panel ── -->
+    <section class="panel hidden" id="progress-panel">
+      <h2>Pipeline Progress</h2>
+      <div id="stage-pills" class="stage-pills">
+        <span class="pill" data-stage="analyse">Analyse</span>
+        <span class="pill" data-stage="mode">Mode</span>
+        <span class="pill" data-stage="design">Design</span>
+        <span class="pill" data-stage="partition">Partition</span>
+        <span class="pill" data-stage="package">Package</span>
+        <span class="pill" data-stage="done">Done</span>
+      </div>
+      <div id="log" class="log"></div>
+    </section>
+
+    <!-- ── Results panel ── -->
+    <section class="panel hidden" id="results-panel">
+      <h2>Results</h2>
+      <div class="results-grid">
+        <!-- 3D viewer -->
+        <div class="viewer-container">
+          <canvas id="viewer-canvas"></canvas>
+          <p id="viewer-hint" class="viewer-hint">Select an STL file below to preview it</p>
+          <div id="viewer-controls" class="viewer-controls hidden">
+            <button id="reset-camera-btn">Reset view</button>
+          </div>
+        </div>
+
+        <!-- File list -->
+        <div id="file-list" class="file-list">
+          <p class="loading-text">Loading files…</p>
+        </div>
+      </div>
+
+      <button id="new-job-btn" class="btn-secondary">New Job</button>
+    </section>
+  </main>
+
+  <!-- Three.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- STLLoader is not in the core bundle — inline a minimal version -->
+  <script>
+  /* Minimal THREE.STLLoader extracted from three.js examples */
+  THREE.STLLoader = function(manager) {
+    THREE.Loader.call(this, manager);
+  };
+  THREE.STLLoader.prototype = Object.assign(Object.create(THREE.Loader.prototype), {
+    constructor: THREE.STLLoader,
+    load: function(url, onLoad, onProgress, onError) {
+      var scope = this;
+      var loader = new THREE.FileLoader(scope.manager);
+      loader.setResponseType('arraybuffer');
+      loader.setRequestHeader(scope.requestHeader);
+      loader.setWithCredentials(scope.withCredentials);
+      loader.load(url, function(text) {
+        try { onLoad(scope.parse(text)); } catch(e) { if(onError) onError(e); else console.error(e); }
+      }, onProgress, onError);
+    },
+    parse: function(data) {
+      var binData = this.ensureBinary(data);
+      return this.isBinary(binData) ? this.parseBinary(binData) : this.parseASCII(this.ensureString(data));
+    },
+    parseBinary: function(data) {
+      var reader = new DataView(data);
+      var faces = reader.getUint32(80, true);
+      var geo = new THREE.BufferGeometry();
+      var verts = new Float32Array(faces * 3 * 3);
+      var norms = new Float32Array(faces * 3 * 3);
+      var offset = 84;
+      for (var i = 0; i < faces; i++) {
+        var s = offset + i * 50;
+        for (var j = 0; j < 3; j++) {
+          norms[i*9+j*3] = reader.getFloat32(s+j*4, true);
+          norms[i*9+j*3+1] = reader.getFloat32(s+j*4+4, true);
+          norms[i*9+j*3+2] = reader.getFloat32(s+j*4+8, true);
+        }
+        for (var j = 0; j < 3; j++) {
+          verts[i*9+j*3]   = reader.getFloat32(s+12+j*12, true);
+          verts[i*9+j*3+1] = reader.getFloat32(s+12+j*12+4, true);
+          verts[i*9+j*3+2] = reader.getFloat32(s+12+j*12+8, true);
+        }
+      }
+      geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+      geo.setAttribute('normal', new THREE.BufferAttribute(norms, 3));
+      return geo;
+    },
+    parseASCII: function(data) {
+      var geo = new THREE.BufferGeometry();
+      var patternNormal = /normal[\s]+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)/g;
+      var patternVertex = /vertex[\s]+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)/g;
+      var verts = [], norms = [], result;
+      while((result = patternNormal.exec(data)) !== null) {
+        norms.push(parseFloat(result[1]), parseFloat(result[3]), parseFloat(result[5]));
+      }
+      while((result = patternVertex.exec(data)) !== null) {
+        verts.push(parseFloat(result[1]), parseFloat(result[3]), parseFloat(result[5]));
+      }
+      var vArr = new Float32Array(verts);
+      var nArr = new Float32Array(norms.length ? norms : verts.length);
+      if(!norms.length) { /* leave zeroes */ }
+      else { /* expand normals per vertex */
+        var expN = new Float32Array(verts.length);
+        for(var i=0;i<verts.length/9;i++) { for(var j=0;j<3;j++) { expN[i*9+j*3]=nArr[i*3]; expN[i*9+j*3+1]=nArr[i*3+1]; expN[i*9+j*3+2]=nArr[i*3+2]; } }
+        nArr = expN;
+      }
+      geo.setAttribute('position', new THREE.BufferAttribute(vArr, 3));
+      geo.setAttribute('normal', new THREE.BufferAttribute(nArr, 3));
+      return geo;
+    },
+    isBinary: function(data) {
+      var expect = 80 + 4 + new DataView(data).getUint32(80, true) * 50;
+      return data.byteLength === expect;
+    },
+    ensureBinary: function(buf) { return typeof buf === 'string' ? new Uint8Array(buf.split('').map(c=>c.charCodeAt(0))).buffer : buf; },
+    ensureString: function(buf) { return typeof buf === 'string' ? buf : new TextDecoder().decode(buf); },
+  });
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

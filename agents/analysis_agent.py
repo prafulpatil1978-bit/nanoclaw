@@ -30,6 +30,9 @@ class ObjectDescription:
     structural_requirements: str
     print_considerations: list[str]
     assembly_notes: str
+    # Routing hints for the pipeline
+    part_category: str = "mechanical"   # mechanical | organic | decorative
+    template_hint: str | None = None    # bracket|housing|plate|cylinder|pipe|lego|lamp|null
     raw_analysis: str = ""
 
 
@@ -56,7 +59,9 @@ Return ONLY a valid JSON object with exactly these keys:
   "print_considerations": [
     "each consideration as a string, e.g. supports needed, minimum wall thickness"
   ],
-  "assembly_notes": "how parts connect and assemble in order"
+  "assembly_notes": "how parts connect and assemble in order",
+  "part_category": "<mechanical|organic|decorative>",
+  "template_hint": "<bracket|housing|plate|cylinder|pipe|lego|lamp|null>"
 }
 
 Rules for suggested_parts:
@@ -65,6 +70,22 @@ Rules for suggested_parts:
 - Prefer 2-6 parts joined with snap-fit, press-fit pins, or M3 bolts.
 - Name parts descriptively: base, body, lid, bracket, arm_left, etc.
 - Assume PLA filament, 0.2 mm layer height, 20% infill unless otherwise specified.
+
+Rules for part_category:
+- "mechanical": functional parts, brackets, enclosures, tools, hardware.
+- "organic": creatures, characters, sculptures, faces, plants, artistic objects.
+- "decorative": geometric art, vases, lampshades, jewellery, non-functional items.
+
+Rules for template_hint:
+- Choose the closest CadQuery template or null if none fits.
+- bracket → L-shaped or wall-mounted support
+- housing → enclosed box or enclosure with lid
+- plate → flat panel or mounting plate
+- cylinder → axially-symmetric: spacer, knob, bushing, hub
+- pipe → hollow tube or conduit
+- lego → stud-compatible brick
+- lamp → shade, diffuser, or light fixture
+- null → no template applies, use generative AI
 
 Do not include markdown, code fences, or any text outside the JSON.\
 """
@@ -127,6 +148,10 @@ class AnalysisAgent:
             for p in data.get("suggested_parts", [])
         ]
 
+        template_hint = data.get("template_hint") or None
+        if template_hint == "null":
+            template_hint = None
+
         return ObjectDescription(
             name=data["name"],
             description=data["description"],
@@ -136,5 +161,7 @@ class AnalysisAgent:
             structural_requirements=data.get("structural_requirements", ""),
             print_considerations=data.get("print_considerations", []),
             assembly_notes=data.get("assembly_notes", ""),
+            part_category=data.get("part_category", "mechanical"),
+            template_hint=template_hint,
             raw_analysis=raw,
         )

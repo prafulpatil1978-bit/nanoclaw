@@ -21,10 +21,16 @@ console = Console()
 
 def _check_api_key() -> None:
     import os
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    has_key = (
+        os.environ.get("OPENROUTER_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("USE_OLLAMA", "").lower() in ("1", "true", "yes")
+    )
+    if not has_key:
         console.print(
-            "[bold red]Error:[/] ANTHROPIC_API_KEY is not set.\n"
-            "Copy [cyan].env.example[/] to [cyan].env[/] and add your key."
+            "[bold red]Error:[/] No LLM API key found.\n"
+            "Set [cyan]OPENROUTER_API_KEY[/] or [cyan]ANTHROPIC_API_KEY[/] in your .env,\n"
+            "or start Ollama and set [cyan]USE_OLLAMA=1[/]."
         )
         sys.exit(1)
 
@@ -40,10 +46,10 @@ def cli() -> None:
 @click.option("--output", "-o", default="./output", show_default=True, help="Output root directory.")
 @click.option(
     "--mode", "-m",
-    type=click.Choice(["auto", "parametric", "mesh"]),
+    type=click.Choice(["auto", "partgen", "parametric", "mesh"]),
     default="auto",
     show_default=True,
-    help="auto | parametric (OpenSCAD) | mesh (AI mesh generation)",
+    help="auto | partgen (CadQuery templates) | parametric (OpenSCAD) | mesh (AI mesh generation)",
 )
 @click.option(
     "--backend", "-b",
@@ -98,9 +104,10 @@ def generate(
     }
     mode_label = {
         "auto": "Auto-detect",
+        "partgen": "Part-gen (CadQuery templates)",
         "parametric": "Parametric (OpenSCAD)",
         "mesh": f"AI Mesh ({backend_labels[backend]})",
-    }[mode]
+    }.get(mode, mode)
 
     console.print(
         Panel.fit(
@@ -183,9 +190,9 @@ def _print_summary(result) -> None:
     tree.add("[dim]manifest.json[/]")
     console.print(tree)
 
-    if result.design.warnings or result.partition.warnings:
+    if result.partition.warnings:
         console.print("\n[yellow]Warnings:[/]")
-        for w in result.design.warnings + result.partition.warnings:
+        for w in result.partition.warnings:
             console.print(f"  • {w}")
 
     console.print(
@@ -198,6 +205,31 @@ def _print_summary(result) -> None:
             f"  openscad -o <part>.stl scad/<part>.scad\n"
             f"or open SCAD files in OpenSCAD GUI."
         )
+
+
+@cli.command()
+@click.option("--port", "-p", default=7860, show_default=True, help="Port to listen on.")
+@click.option("--host", default="0.0.0.0", show_default=True, help="Host to bind.")
+@click.option("--reload", is_flag=True, default=False, help="Enable auto-reload (development).")
+def serve(port: int, host: str, reload: bool) -> None:
+    """Start the localhost web UI.
+
+    \b
+    Then open  http://localhost:<port>  in your browser.
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[bold red]Error:[/] uvicorn not installed. Run: pip install uvicorn")
+        sys.exit(1)
+
+    console.print(
+        Panel.fit(
+            f"[bold cyan]nanoclaw[/] Web UI\n"
+            f"[dim]Open [bold]http://localhost:{port}[/] in your browser[/]",
+        )
+    )
+    uvicorn.run("ui.app:app", host=host, port=port, reload=reload)
 
 
 @cli.command()

@@ -222,35 +222,60 @@ class UnifiedClient:
 # ── Factory ────────────────────────────────────────────────────────────────
 
 _OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+_OLLAMA_BASE = "http://localhost:11434/v1"
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-3.5-sonnet"
+_DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
+
+
+def _ollama_running() -> bool:
+    try:
+        import httpx
+        r = httpx.get(f"{_OLLAMA_BASE}/models", timeout=2)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 
 def build_client() -> UnifiedClient:
-    """Return a UnifiedClient using whichever key is available."""
+    """Return a UnifiedClient using whichever key/service is available.
+
+    Priority: OPENROUTER_API_KEY → ANTHROPIC_API_KEY → Ollama (local)
+    """
     or_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     ant_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    use_ollama = os.environ.get("USE_OLLAMA", "").lower() in ("1", "true", "yes")
 
-    if or_key:
+    if or_key and not use_ollama:
         from openai import OpenAI
         raw = OpenAI(base_url=_OPENROUTER_BASE, api_key=or_key)
         return UnifiedClient("openrouter", raw)
 
-    if ant_key:
+    if ant_key and not use_ollama:
         import anthropic
         raw = anthropic.Anthropic(api_key=ant_key)
         return UnifiedClient("anthropic", raw)
 
+    # Ollama — free local fallback (or explicit USE_OLLAMA=1)
+    if use_ollama or _ollama_running():
+        from openai import OpenAI
+        raw = OpenAI(base_url=_OLLAMA_BASE, api_key="ollama")
+        return UnifiedClient("ollama", raw)
+
     raise EnvironmentError(
-        "No LLM API key found. Set OPENROUTER_API_KEY or ANTHROPIC_API_KEY in .env"
+        "No LLM available. Set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, "
+        "or start Ollama (ollama serve) and set USE_OLLAMA=1 in .env"
     )
 
 
 def resolve_model(requested: str | None, provider: str) -> str:
-    """Map an Anthropic model name to the right name for the active provider."""
+    """Map a model name to the correct format for the active provider."""
     if provider == "anthropic":
         return requested or "claude-opus-4-7"
 
-    # OpenRouter: use env override, or map Anthropic names to OpenRouter slugs
+    if provider == "ollama":
+        return os.environ.get("OLLAMA_MODEL", _DEFAULT_OLLAMA_MODEL)
+
+    # OpenRouter — use env override or map Anthropic names to OpenRouter slugs
     if os.environ.get("OPENROUTER_MODEL"):
         return os.environ["OPENROUTER_MODEL"]
 

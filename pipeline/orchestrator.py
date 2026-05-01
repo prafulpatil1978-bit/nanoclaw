@@ -1,7 +1,8 @@
-"""Ties all pipeline stages together. Supports two modes:
+"""Ties all pipeline stages together. Supports three modes:
 
-  parametric — OpenSCAD-based (best for mechanical/functional objects)
-  mesh       — AI mesh generation via a pluggable backend
+  partgen    — CadQuery template engine via part-gen subprocess (best for standard shapes)
+  parametric — OpenSCAD-based agentic design (best for custom mechanical/functional objects)
+  mesh       — AI mesh generation via a pluggable backend (best for organic/artistic objects)
 
 Mesh backends (--backend flag):
   shape-e   Local, free, no API key  (default)
@@ -20,7 +21,7 @@ from pipeline.packager import PackageResult, Packager
 from pipeline.partitioner import PartitionResult
 from utils.file_utils import ensure_dir, safe_filename
 
-PipelineMode = Literal["parametric", "mesh", "auto"]
+PipelineMode = Literal["partgen", "parametric", "mesh", "auto"]
 MeshBackendName = Literal["shape-e", "tripo3d", "meshy"]
 
 
@@ -86,7 +87,9 @@ class Pipeline:
         mode = self._resolve_mode(obj_desc)
         _progress("mode", f"Pipeline mode: {mode}")
 
-        if mode == "mesh":
+        if mode == "partgen":
+            partition = self._run_partgen_mode(obj_desc, work_dir, _progress)
+        elif mode == "mesh":
             partition = self._run_mesh_mode(obj_desc, image_path, work_dir, slug, _progress)
         else:
             partition = self._run_parametric_mode(obj_desc, work_dir, _progress)
@@ -113,6 +116,57 @@ class Pipeline:
     # ------------------------------------------------------------------
     # Mode runners
     # ------------------------------------------------------------------
+    def _run_partgen_mode(self, obj_desc, work_dir, _progress) -> PartitionResult:
+        from agents.partgen_agent import PartgenAgent
+        from pipeline.partitioner import Part, PartitionResult as PR
+
+        _progress("design", "Generating CadQuery model via part-gen templates…")
+        agent = PartgenAgent(work_dir=work_dir)
+        if not agent.available:
+            _progress("design", "part-gen not found — falling back to parametric (OpenSCAD)")
+            return self._run_parametric_mode(obj_desc, work_dir, _progress)
+
+        result = agent.generate(obj_desc)
+        for w in result.warnings:
+            _progress("design", f"[warn] {w}")
+
+        if not result.success:
+            _progress("design", "part-gen did not produce STL — falling back to parametric")
+            return self._run_parametric_mode(obj_desc, work_dir, _progress)
+
+        _progress("design", f"part-gen complete — template: {result.template_used}")
+
+        parts: list[Part] = []
+        if result.stl_path and result.stl_path.exists():
+            parts.append(
+                Part(
+                    index=1,
+                    module_name="part_main",
+                    scad_filename="",
+                    stl_filename=result.stl_path.name,
+                    scad_path=work_dir / "master.scad",
+                    stl_path=result.stl_path,
+                    printable=True,
+                )
+            )
+        if result.step_path and result.step_path.exists():
+            # STEP is bonus — add as a second "part" entry so packager can copy it
+            parts.append(
+                Part(
+                    index=2,
+                    module_name="part_main_step",
+                    scad_filename="",
+                    stl_filename=result.step_path.name,
+                    scad_path=work_dir / "master.scad",
+                    stl_path=result.step_path,
+                    printable=False,
+                    issues=["STEP file — not an STL, for CAD import only"],
+                )
+            )
+
+        _progress("partition", f"{len(parts)} output file(s) from part-gen")
+        return PR(parts=parts, master_scad_path=work_dir / "master.scad", warnings=result.warnings)
+
     def _run_parametric_mode(self, obj_desc, work_dir, _progress) -> PartitionResult:
         from agents.design_agent import DesignAgent
         from pipeline.partitioner import Partitioner
@@ -164,21 +218,36 @@ class Pipeline:
             return self.mode
 
         import os
-        # Determine if the selected backend can actually run
+        from agents.partgen_agent import PARTGEN_TEMPLATES, PartgenAgent
+
+        # ── 1. partgen: template match + partgen available ──────────────
+        template_hint = getattr(obj_desc, "template_hint", None)
+        if template_hint and template_hint in PARTGEN_TEMPLATES:
+            agent = PartgenAgent(work_dir="/tmp/_partgen_probe")
+            if agent.available:
+                return "partgen"
+
+        # ── 2. mesh: organic/decorative + backend available ─────────────
         backend_available = {
-            "shape-e": True,  # always available — runs locally, no key
+            "shape-e": True,
             "tripo3d": bool(os.environ.get("TRIPO3D_API_KEY", "").strip()),
             "meshy":   bool(os.environ.get("MESHY_API_KEY", "").strip()),
         }.get(self.mesh_backend, False)
 
-        organic_keywords = {
-            "animal", "character", "creature", "face", "figure", "organic",
-            "sculpture", "figurine", "bust", "toy", "cartoon", "dragon",
-            "robot", "miniature", "model", "statue", "person", "human",
-        }
-        desc_lower = (obj_desc.description + " " + obj_desc.name).lower()
-        is_organic = any(kw in desc_lower for kw in organic_keywords)
+        category = getattr(obj_desc, "part_category", "mechanical")
+        is_organic = category in ("organic", "decorative")
+
+        if not is_organic:
+            organic_keywords = {
+                "animal", "character", "creature", "face", "figure", "organic",
+                "sculpture", "figurine", "bust", "toy", "cartoon", "dragon",
+                "robot", "miniature", "model", "statue", "person", "human",
+            }
+            desc_lower = (obj_desc.description + " " + obj_desc.name).lower()
+            is_organic = any(kw in desc_lower for kw in organic_keywords)
 
         if is_organic and backend_available:
             return "mesh"
+
+        # ── 3. parametric: default (OpenSCAD) ───────────────────────────
         return "parametric"
