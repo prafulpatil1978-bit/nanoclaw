@@ -114,11 +114,11 @@ class Packager:
             ]
             if part.issues:
                 lines += [f"- **Issues:** {'; '.join(part.issues)}"]
-            scad = Path(part.scad_filename)
-            orientation_hint = (part.scad_path.read_text(encoding="utf-8")
-                                .split("\n")[8] if part.scad_path.exists() else "")
-            if orientation_hint.startswith("//"):
-                lines += [f"- **Orientation:** {orientation_hint.lstrip('/ ').strip()}"]
+            if part.scad_path and part.scad_path.exists():
+                raw_lines = part.scad_path.read_text(encoding="utf-8").splitlines()
+                orientation_hint = raw_lines[8] if len(raw_lines) > 8 else ""
+                if orientation_hint.startswith("//"):
+                    lines += [f"- **Orientation:** {orientation_hint.lstrip('/ ').strip()}"]
             lines.append("")
 
         if obj.print_considerations:

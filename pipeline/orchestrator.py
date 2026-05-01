@@ -164,10 +164,13 @@ class Pipeline:
             return self.mode
 
         import os
-        has_meshy_key = bool(os.environ.get("MESHY_API_KEY", "").strip())
+        # Determine if the selected backend can actually run
+        backend_available = {
+            "shape-e": True,  # always available — runs locally, no key
+            "tripo3d": bool(os.environ.get("TRIPO3D_API_KEY", "").strip()),
+            "meshy":   bool(os.environ.get("MESHY_API_KEY", "").strip()),
+        }.get(self.mesh_backend, False)
 
-        # Heuristic: if the description mentions organic/character/animal keywords,
-        # prefer mesh mode (if API key is available).
         organic_keywords = {
             "animal", "character", "creature", "face", "figure", "organic",
             "sculpture", "figurine", "bust", "toy", "cartoon", "dragon",
@@ -176,6 +179,6 @@ class Pipeline:
         desc_lower = (obj_desc.description + " " + obj_desc.name).lower()
         is_organic = any(kw in desc_lower for kw in organic_keywords)
 
-        if is_organic and has_meshy_key:
+        if is_organic and backend_available:
             return "mesh"
         return "parametric"
