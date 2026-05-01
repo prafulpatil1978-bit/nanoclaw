@@ -344,6 +344,314 @@ def test_mode_resolution():
     assert pipeline3._resolve_mode(mechanical_desc) == "mesh"
 
 
+@test("analysis_agent: ObjectDescription has part_category and template_hint fields")
+def test_object_description_new_fields():
+    from agents.analysis_agent import ObjectDescription
+    desc = ObjectDescription(
+        name="Pipe Bracket",
+        description="An L-shaped bracket for mounting a 25mm pipe.",
+        overall_dimensions_mm={"x": 60, "y": 40, "z": 30},
+        features=["mounting holes"],
+        suggested_parts=[],
+        structural_requirements="",
+        print_considerations=[],
+        assembly_notes="",
+        part_category="mechanical",
+        template_hint="bracket",
+    )
+    assert desc.part_category == "mechanical"
+    assert desc.template_hint == "bracket"
+
+    # Defaults when not supplied
+    desc2 = ObjectDescription(
+        name="Box",
+        description="A simple box.",
+        overall_dimensions_mm={"x": 50, "y": 50, "z": 30},
+        features=[],
+        suggested_parts=[],
+        structural_requirements="",
+        print_considerations=[],
+        assembly_notes="",
+    )
+    assert desc2.part_category == "mechanical"
+    assert desc2.template_hint is None
+
+
+@test("pipeline: 3-way routing — partgen when template_hint matches and partgen available")
+def test_3way_routing_partgen():
+    from pipeline.orchestrator import Pipeline
+    from agents.analysis_agent import ObjectDescription
+    import unittest.mock as mock
+
+    bracket_desc = ObjectDescription(
+        name="Wall Bracket",
+        description="A wall-mounted L-bracket for pipe support.",
+        overall_dimensions_mm={"x": 80, "y": 50, "z": 40},
+        features=["mounting holes"],
+        suggested_parts=[],
+        structural_requirements="",
+        print_considerations=[],
+        assembly_notes="",
+        part_category="mechanical",
+        template_hint="bracket",
+    )
+
+    pipeline = Pipeline(mode="auto", mesh_backend="tripo3d")
+
+    # Patch PartgenAgent.available to True
+    with mock.patch("agents.partgen_agent.PartgenAgent.available", new_callable=mock.PropertyMock, return_value=True):
+        mode = pipeline._resolve_mode(bracket_desc)
+    assert mode == "partgen", f"Expected partgen, got {mode}"
+
+
+@test("pipeline: 3-way routing — mesh for organic when key set")
+def test_3way_routing_mesh():
+    from pipeline.orchestrator import Pipeline
+    from agents.analysis_agent import ObjectDescription
+
+    dragon_desc = ObjectDescription(
+        name="Dragon Sculpture",
+        description="An organic dragon creature sculpture.",
+        overall_dimensions_mm={"x": 150, "y": 100, "z": 200},
+        features=["wings", "tail"],
+        suggested_parts=[],
+        structural_requirements="",
+        print_considerations=[],
+        assembly_notes="",
+        part_category="organic",
+        template_hint=None,
+    )
+
+    os.environ["TRIPO3D_API_KEY"] = "test_key"
+    pipeline = Pipeline(mode="auto", mesh_backend="tripo3d")
+    mode = pipeline._resolve_mode(dragon_desc)
+    del os.environ["TRIPO3D_API_KEY"]
+    assert mode == "mesh", f"Expected mesh, got {mode}"
+
+
+@test("pipeline: 3-way routing — parametric fallback when no keys and no partgen")
+def test_3way_routing_parametric_fallback():
+    from pipeline.orchestrator import Pipeline
+    from agents.analysis_agent import ObjectDescription
+    import unittest.mock as mock
+
+    desc = ObjectDescription(
+        name="Custom Bracket",
+        description="A custom mechanical bracket.",
+        overall_dimensions_mm={"x": 80, "y": 50, "z": 40},
+        features=[],
+        suggested_parts=[],
+        structural_requirements="",
+        print_considerations=[],
+        assembly_notes="",
+        part_category="mechanical",
+        template_hint="bracket",
+    )
+
+    pipeline = Pipeline(mode="auto", mesh_backend="tripo3d")
+    # partgen NOT available → should fall through to parametric
+    with mock.patch("agents.partgen_agent.PartgenAgent.available", new_callable=mock.PropertyMock, return_value=False):
+        mode = pipeline._resolve_mode(desc)
+    assert mode == "parametric", f"Expected parametric, got {mode}"
+
+
+@test("partgen_agent: PartgenAgent detects missing part-gen correctly")
+def test_partgen_agent_unavailable():
+    from agents.partgen_agent import PartgenAgent, PARTGEN_TEMPLATES
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = PartgenAgent(work_dir=tmp, partgen_path="/nonexistent/path/part-gen")
+        assert agent.available is False
+
+    # PARTGEN_TEMPLATES should have all expected templates
+    expected = {"bracket", "housing", "plate", "cylinder", "pipe", "lego", "lamp"}
+    assert expected == PARTGEN_TEMPLATES
+
+
+@test("partgen_agent: generate returns warnings when unavailable")
+def test_partgen_agent_generate_unavailable():
+    from agents.partgen_agent import PartgenAgent
+    from agents.analysis_agent import ObjectDescription
+
+    desc = ObjectDescription(
+        name="Test Bracket",
+        description="A simple bracket.",
+        overall_dimensions_mm={"x": 80, "y": 50, "z": 40},
+        features=[],
+        suggested_parts=[],
+        structural_requirements="",
+        print_considerations=[],
+        assembly_notes="",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = PartgenAgent(work_dir=tmp, partgen_path="/nonexistent/path")
+        result = agent.generate(desc)
+        assert result.success is False
+        assert len(result.warnings) > 0
+        assert "not found" in result.warnings[0].lower() or "partgen" in result.warnings[0].lower() or "part-gen" in result.warnings[0].lower()
+
+
+@test("partgen_agent: _detect_template keyword mapping")
+def test_partgen_template_detection():
+    from agents.partgen_agent import PartgenAgent
+    from agents.analysis_agent import ObjectDescription
+
+    def make_desc(name, desc, hint=None):
+        return ObjectDescription(
+            name=name, description=desc,
+            overall_dimensions_mm={"x":50,"y":50,"z":20},
+            features=[], suggested_parts=[],
+            structural_requirements="", print_considerations=[],
+            assembly_notes="", template_hint=hint,
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = PartgenAgent(work_dir=tmp, partgen_path="/tmp")
+
+        # template_hint takes priority
+        assert agent._detect_template(make_desc("x", "y", hint="lamp")) == "lamp"
+
+        # keyword fallback
+        assert agent._detect_template(make_desc("wall bracket", "mounting bracket")) == "bracket"
+        assert agent._detect_template(make_desc("enclosure", "electronics housing")) == "housing"
+        assert agent._detect_template(make_desc("mounting plate", "flat panel")) == "plate"
+        assert agent._detect_template(make_desc("knob", "a cylinder spacer")) == "cylinder"
+        assert agent._detect_template(make_desc("pipe fitting", "hollow tube")) == "pipe"
+        assert agent._detect_template(make_desc("lamp shade", "a light diffuser")) == "lamp"
+        assert agent._detect_template(make_desc("custom gear", "an unusual gear part")) == "auto"
+
+
+@test("llm_client: build_client raises without keys or ollama")
+def test_llm_client_no_keys():
+    from utils.llm_client import build_client
+    import unittest.mock as mock
+
+    # Remove all keys, fake ollama not running
+    env_backup = {k: os.environ.pop(k) for k in ("OPENROUTER_API_KEY","ANTHROPIC_API_KEY","USE_OLLAMA") if k in os.environ}
+    try:
+        with mock.patch("utils.llm_client._ollama_running", return_value=False):
+            raised = False
+            try:
+                build_client()
+            except EnvironmentError:
+                raised = True
+            assert raised, "Expected EnvironmentError when no keys set"
+    finally:
+        os.environ.update(env_backup)
+
+
+@test("llm_client: resolve_model maps Anthropic names to OpenRouter slugs")
+def test_resolve_model():
+    from utils.llm_client import resolve_model
+    assert "claude" in resolve_model("claude-opus-4-7", "openrouter").lower()
+    assert resolve_model(None, "anthropic") == "claude-opus-4-7"
+    # Ollama always uses env or default
+    m = resolve_model("claude-opus-4-7", "ollama")
+    assert m  # non-empty string
+
+
+@test("ui_app: FastAPI app imports and has expected routes")
+def test_ui_app_routes():
+    from ui.app import app
+    routes = {r.path for r in app.routes}
+    assert "/" in routes, f"Missing / in {routes}"
+    assert "/api/generate" in routes, f"Missing /api/generate in {routes}"
+    assert "/api/jobs/{job_id}/events" in routes, f"Missing events route in {routes}"
+    assert "/api/jobs/{job_id}/files" in routes, f"Missing files route in {routes}"
+    # FastAPI path converter adds :path suffix for multi-segment paths
+    assert any("download" in r for r in routes), f"Missing download route in {routes}"
+
+
+@test("ui_app: friendly_error maps 401 to actionable message")
+def test_friendly_error():
+    from ui.app import _friendly_error
+    msg = _friendly_error(Exception("Error code: 401 – {'error': {'message': 'User not found.', 'code': 401}}"))
+    assert "openrouter" in msg.lower() or "api key" in msg.lower()
+    assert "401" in msg
+
+    msg2 = _friendly_error(Exception("rate limit 429 exceeded"))
+    assert "429" in msg2
+
+    msg3 = _friendly_error(Exception("some unknown error"))
+    assert "unknown" in msg3
+
+
+@test("analysis_agent: parses JSON with new part_category and template_hint fields")
+def test_analysis_json_parsing():
+    import unittest.mock as mock
+    from agents.analysis_agent import AnalysisAgent
+
+    sample_json = json.dumps({
+        "name": "Pipe Bracket",
+        "description": "An L-bracket for 25mm pipe.",
+        "overall_dimensions_mm": {"x": 80, "y": 50, "z": 40},
+        "features": ["mounting holes", "pipe slot"],
+        "suggested_parts": [
+            {
+                "name": "body",
+                "description": "Main bracket body",
+                "estimated_dimensions_mm": {"x": 80, "y": 50, "z": 40},
+                "notes": "Print flat",
+            }
+        ],
+        "structural_requirements": "Rigid PLA.",
+        "print_considerations": ["No supports needed."],
+        "assembly_notes": "Single part.",
+        "part_category": "mechanical",
+        "template_hint": "bracket",
+    })
+
+    fake_block = mock.MagicMock()
+    fake_block.text = sample_json
+    fake_response = mock.MagicMock()
+    fake_response.content = [fake_block]
+
+    fake_client = mock.MagicMock()
+    fake_client.messages.create.return_value = fake_response
+    fake_client.messages._provider = "anthropic"
+
+    with mock.patch("agents.analysis_agent.build_client", return_value=fake_client):
+        agent = AnalysisAgent()
+        desc = agent.analyse(text_description="A pipe bracket")
+
+    assert desc.name == "Pipe Bracket"
+    assert desc.part_category == "mechanical"
+    assert desc.template_hint == "bracket"
+    assert len(desc.suggested_parts) == 1
+
+
+@test("analysis_agent: template_hint 'null' string becomes None")
+def test_analysis_null_template_hint():
+    import unittest.mock as mock
+    from agents.analysis_agent import AnalysisAgent
+
+    sample_json = json.dumps({
+        "name": "Custom Gear",
+        "description": "A spur gear.",
+        "overall_dimensions_mm": {"x": 40, "y": 40, "z": 10},
+        "features": ["teeth"],
+        "suggested_parts": [],
+        "structural_requirements": "",
+        "print_considerations": [],
+        "assembly_notes": "",
+        "part_category": "mechanical",
+        "template_hint": "null",
+    })
+
+    fake_block = mock.MagicMock()
+    fake_block.text = sample_json
+    fake_response = mock.MagicMock()
+    fake_response.content = [fake_block]
+    fake_client = mock.MagicMock()
+    fake_client.messages.create.return_value = fake_response
+    fake_client.messages._provider = "anthropic"
+
+    with mock.patch("agents.analysis_agent.build_client", return_value=fake_client):
+        agent = AnalysisAgent()
+        desc = agent.analyse(text_description="A gear")
+
+    assert desc.template_hint is None, f"Expected None, got {desc.template_hint!r}"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Live API tests (require ANTHROPIC_API_KEY)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -436,6 +744,22 @@ if __name__ == "__main__":
         test_packager()
         test_backend_map()
         test_mode_resolution()
+
+        print()
+        print("── New feature tests ──")
+        test_object_description_new_fields()
+        test_3way_routing_partgen()
+        test_3way_routing_mesh()
+        test_3way_routing_parametric_fallback()
+        test_partgen_agent_unavailable()
+        test_partgen_agent_generate_unavailable()
+        test_partgen_template_detection()
+        test_llm_client_no_keys()
+        test_resolve_model()
+        test_ui_app_routes()
+        test_friendly_error()
+        test_analysis_json_parsing()
+        test_analysis_null_template_hint()
 
     if not offline_only:
         print("\n── Live API tests ──")
