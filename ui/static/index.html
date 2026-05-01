@@ -89,82 +89,76 @@
 
   <!-- Three.js from CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <!-- STLLoader is not in the core bundle — inline a minimal version -->
+  <!-- STLLoader — standalone ES6 class, no inheritance from THREE.Loader -->
   <script>
-  /* Minimal THREE.STLLoader extracted from three.js examples */
-  THREE.STLLoader = function(manager) {
-    THREE.Loader.call(this, manager);
-  };
-  THREE.STLLoader.prototype = Object.assign(Object.create(THREE.Loader.prototype), {
-    constructor: THREE.STLLoader,
-    load: function(url, onLoad, onProgress, onError) {
-      var scope = this;
-      var loader = new THREE.FileLoader(scope.manager);
+  THREE.STLLoader = class {
+    constructor(manager) {
+      this.manager = manager || THREE.DefaultLoadingManager;
+    }
+    load(url, onLoad, onProgress, onError) {
+      const loader = new THREE.FileLoader(this.manager);
       loader.setResponseType('arraybuffer');
-      loader.setRequestHeader(scope.requestHeader);
-      loader.setWithCredentials(scope.withCredentials);
-      loader.load(url, function(text) {
-        try { onLoad(scope.parse(text)); } catch(e) { if(onError) onError(e); else console.error(e); }
+      loader.load(url, (data) => {
+        try { onLoad(this.parse(data)); } catch(e) { if(onError) onError(e); else console.error(e); }
       }, onProgress, onError);
-    },
-    parse: function(data) {
-      var binData = this.ensureBinary(data);
-      return this.isBinary(binData) ? this.parseBinary(binData) : this.parseASCII(this.ensureString(data));
-    },
-    parseBinary: function(data) {
-      var reader = new DataView(data);
-      var faces = reader.getUint32(80, true);
-      var geo = new THREE.BufferGeometry();
-      var verts = new Float32Array(faces * 3 * 3);
-      var norms = new Float32Array(faces * 3 * 3);
-      var offset = 84;
-      for (var i = 0; i < faces; i++) {
-        var s = offset + i * 50;
-        for (var j = 0; j < 3; j++) {
-          norms[i*9+j*3] = reader.getFloat32(s+j*4, true);
-          norms[i*9+j*3+1] = reader.getFloat32(s+j*4+4, true);
-          norms[i*9+j*3+2] = reader.getFloat32(s+j*4+8, true);
+    }
+    parse(data) {
+      const bin = this._ensureBinary(data);
+      return this._isBinary(bin) ? this._parseBinary(bin) : this._parseASCII(this._ensureString(data));
+    }
+    _parseBinary(data) {
+      const reader = new DataView(data);
+      const faces = reader.getUint32(80, true);
+      const geo = new THREE.BufferGeometry();
+      const verts = new Float32Array(faces * 9);
+      const norms = new Float32Array(faces * 9);
+      for (let i = 0; i < faces; i++) {
+        const s = 84 + i * 50;
+        for (let j = 0; j < 3; j++) {
+          norms[i*9+j*3]   = reader.getFloat32(s + j*4,     true);
+          norms[i*9+j*3+1] = reader.getFloat32(s + j*4 + 4, true);
+          norms[i*9+j*3+2] = reader.getFloat32(s + j*4 + 8, true);
         }
-        for (var j = 0; j < 3; j++) {
-          verts[i*9+j*3]   = reader.getFloat32(s+12+j*12, true);
-          verts[i*9+j*3+1] = reader.getFloat32(s+12+j*12+4, true);
-          verts[i*9+j*3+2] = reader.getFloat32(s+12+j*12+8, true);
+        for (let j = 0; j < 3; j++) {
+          verts[i*9+j*3]   = reader.getFloat32(s + 12 + j*12,     true);
+          verts[i*9+j*3+1] = reader.getFloat32(s + 12 + j*12 + 4, true);
+          verts[i*9+j*3+2] = reader.getFloat32(s + 12 + j*12 + 8, true);
         }
       }
       geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-      geo.setAttribute('normal', new THREE.BufferAttribute(norms, 3));
+      geo.setAttribute('normal',   new THREE.BufferAttribute(norms, 3));
       return geo;
-    },
-    parseASCII: function(data) {
-      var geo = new THREE.BufferGeometry();
-      var patternNormal = /normal[\s]+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)/g;
-      var patternVertex = /vertex[\s]+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)/g;
-      var verts = [], norms = [], result;
+    }
+    _parseASCII(data) {
+      const geo = new THREE.BufferGeometry();
+      const patternNormal = /normal[\s]+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)/g;
+      const patternVertex = /vertex[\s]+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)\s+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)/g;
+      const verts = [], norms = []; let result;
       while((result = patternNormal.exec(data)) !== null) {
         norms.push(parseFloat(result[1]), parseFloat(result[3]), parseFloat(result[5]));
       }
       while((result = patternVertex.exec(data)) !== null) {
         verts.push(parseFloat(result[1]), parseFloat(result[3]), parseFloat(result[5]));
       }
-      var vArr = new Float32Array(verts);
-      var nArr = new Float32Array(norms.length ? norms : verts.length);
-      if(!norms.length) { /* leave zeroes */ }
-      else { /* expand normals per vertex */
-        var expN = new Float32Array(verts.length);
-        for(var i=0;i<verts.length/9;i++) { for(var j=0;j<3;j++) { expN[i*9+j*3]=nArr[i*3]; expN[i*9+j*3+1]=nArr[i*3+1]; expN[i*9+j*3+2]=nArr[i*3+2]; } }
+      const vArr = new Float32Array(verts);
+      let nArr = new Float32Array(norms.length ? norms : verts.length);
+      if (norms.length) {
+        const expN = new Float32Array(verts.length);
+        for (let i = 0; i < verts.length/9; i++)
+          for (let j = 0; j < 3; j++) { expN[i*9+j*3]=nArr[i*3]; expN[i*9+j*3+1]=nArr[i*3+1]; expN[i*9+j*3+2]=nArr[i*3+2]; }
         nArr = expN;
       }
       geo.setAttribute('position', new THREE.BufferAttribute(vArr, 3));
-      geo.setAttribute('normal', new THREE.BufferAttribute(nArr, 3));
+      geo.setAttribute('normal',   new THREE.BufferAttribute(nArr, 3));
       return geo;
-    },
-    isBinary: function(data) {
-      var expect = 80 + 4 + new DataView(data).getUint32(80, true) * 50;
+    }
+    _isBinary(data) {
+      const expect = 80 + 4 + new DataView(data).getUint32(80, true) * 50;
       return data.byteLength === expect;
-    },
-    ensureBinary: function(buf) { return typeof buf === 'string' ? new Uint8Array(buf.split('').map(c=>c.charCodeAt(0))).buffer : buf; },
-    ensureString: function(buf) { return typeof buf === 'string' ? buf : new TextDecoder().decode(buf); },
-  });
+    }
+    _ensureBinary(buf) { return typeof buf === 'string' ? new Uint8Array(buf.split('').map(c=>c.charCodeAt(0))).buffer : buf; }
+    _ensureString(buf) { return typeof buf === 'string' ? buf : new TextDecoder().decode(buf); }
+  };
   </script>
   <script src="/static/app.js"></script>
 </body>
