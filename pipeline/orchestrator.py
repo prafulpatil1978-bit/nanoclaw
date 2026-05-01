@@ -1,7 +1,12 @@
 """Ties all pipeline stages together. Supports two modes:
 
   parametric — OpenSCAD-based (best for mechanical/functional objects)
-  mesh       — AI mesh generation via Meshy.ai (best for organic/artistic objects)
+  mesh       — AI mesh generation via a pluggable backend
+
+Mesh backends (--backend flag):
+  shape-e   Local, free, no API key  (default)
+  tripo3d   Tripo3D cloud API, free tier supports downloads
+  meshy     Meshy.ai cloud API, paid tier required for downloads
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from pipeline.partitioner import PartitionResult
 from utils.file_utils import ensure_dir, safe_filename
 
 PipelineMode = Literal["parametric", "mesh", "auto"]
+MeshBackendName = Literal["shape-e", "tripo3d", "meshy"]
 
 
 @dataclass
@@ -39,11 +45,13 @@ class Pipeline:
         self,
         output_root: str | Path = "./output",
         mode: PipelineMode = "auto",
+        mesh_backend: MeshBackendName = "shape-e",
         analysis_model: str | None = None,
         design_model: str | None = None,
     ) -> None:
         self.output_root = Path(output_root)
         self.mode = mode
+        self.mesh_backend = mesh_backend
         self.analysis_model = analysis_model
         self.design_model = design_model
 
@@ -126,12 +134,16 @@ class Pipeline:
         from agents.mesh_agent import MeshAgent
         from pipeline.mesh_partitioner import MeshPartitioner
 
-        _progress("design", "Generating 3D mesh via Meshy.ai…")
-        mesh_agent = MeshAgent(work_dir=work_dir)
+        backend = self.mesh_backend
+        _progress("design", f"Generating 3D mesh via {backend}…")
+        mesh_agent = MeshAgent(work_dir=work_dir, backend=backend)
         mesh_result = mesh_agent.generate(obj_desc, image_path=image_path)
 
         if not mesh_result.success:
-            raise RuntimeError("Meshy.ai mesh generation failed — no STL produced.")
+            raise RuntimeError(
+                f"{backend} mesh generation failed — no STL produced. "
+                f"Warnings: {'; '.join(mesh_result.warnings)}"
+            )
 
         _progress("design", f"Mesh downloaded: {mesh_result.mesh_stl_path}")
 

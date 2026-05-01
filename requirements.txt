@@ -7,3 +7,10 @@ rich>=13.7.0
 click>=8.1.0
 numpy-stl>=3.0.0
 httpx>=0.27.0
+
+# ── Mesh backends (install whichever you use) ──────────────────────────────
+# shape-e (local/free, ~1 GB model download on first use):
+#   pip install shap-e torch
+#
+# tripo3d / meshy (cloud APIs, httpx already covers these):
+#   just set the API key in .env — no extra packages needed

@@ -43,10 +43,18 @@ def cli() -> None:
     type=click.Choice(["auto", "parametric", "mesh"]),
     default="auto",
     show_default=True,
+    help="auto | parametric (OpenSCAD) | mesh (AI mesh generation)",
+)
+@click.option(
+    "--backend", "-b",
+    type=click.Choice(["shape-e", "tripo3d", "meshy"]),
+    default="shape-e",
+    show_default=True,
     help=(
-        "auto: pick based on object type  |  "
-        "parametric: OpenSCAD (mechanical parts)  |  "
-        "mesh: Meshy.ai (organic / artistic shapes)"
+        "Mesh backend (only used when mode=mesh or auto selects mesh).  "
+        "shape-e: local/free, no key needed  |  "
+        "tripo3d: free API tier with downloads (TRIPO3D_API_KEY)  |  "
+        "meshy: paid tier required (MESHY_API_KEY)"
     ),
 )
 @click.option("--analysis-model", default=None, help="Claude model for analysis stage.")
@@ -56,6 +64,7 @@ def generate(
     image: str | None,
     output: str,
     mode: str,
+    backend: str,
     analysis_model: str | None,
     design_model: str | None,
 ) -> None:
@@ -65,7 +74,16 @@ def generate(
     Modes:
       auto        Choose automatically (organic → mesh, mechanical → parametric)
       parametric  OpenSCAD-based — best for boxes, brackets, functional parts
-      mesh        Meshy.ai AI mesh — best for characters, animals, sculptures
+      mesh        AI mesh — best for characters, animals, sculptures
+
+    \b
+    Mesh backends (use with --mode mesh or auto):
+      shape-e     Fully local, FREE, no API key, works offline
+                  pip install shap-e  (downloads ~1 GB model on first run)
+      tripo3d     Cloud API, free tier allows downloads
+                  Register at https://platform.tripo3d.ai → TRIPO3D_API_KEY
+      meshy       Cloud API, requires paid plan for downloads
+                  https://www.meshy.ai → MESHY_API_KEY
     """
     _check_api_key()
 
@@ -73,15 +91,21 @@ def generate(
         console.print("[bold red]Error:[/] Provide --description and/or --image.")
         sys.exit(1)
 
-    mode_labels = {
+    backend_labels = {
+        "shape-e": "Shap-E (local/free)",
+        "tripo3d": "Tripo3D (API)",
+        "meshy": "Meshy.ai (API)",
+    }
+    mode_label = {
         "auto": "Auto-detect",
         "parametric": "Parametric (OpenSCAD)",
-        "mesh": "AI Mesh (Meshy.ai)",
-    }
+        "mesh": f"AI Mesh ({backend_labels[backend]})",
+    }[mode]
+
     console.print(
         Panel.fit(
             f"[bold cyan]nanoclaw[/] AI 3D Printing Pipeline\n"
-            f"[dim]Mode: {mode_labels[mode]}[/]",
+            f"[dim]Mode: {mode_label}[/]",
             subtitle="sketch → STL package",
         )
     )
@@ -99,6 +123,7 @@ def generate(
     try:
         pipeline = Pipeline(
             output_root=output,
+            mesh_backend=backend,
             mode=mode,
             analysis_model=analysis_model,
             design_model=design_model,
