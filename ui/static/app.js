@@ -6,6 +6,7 @@
 let currentJobId = null;
 let eventSource = null;
 let viewer = null;
+let selectedFile = null;   // tracks file from either drop or file-input click
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
 const dropZone       = document.getElementById('drop-zone');
@@ -35,11 +36,11 @@ dropZone.addEventListener('drop', e => {
   e.preventDefault();
   dropZone.classList.remove('dragover');
   const file = e.dataTransfer.files[0];
-  if (file) showImagePreview(file);
+  if (file) { selectedFile = file; showImagePreview(file); }
 });
 
 fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) showImagePreview(fileInput.files[0]);
+  if (fileInput.files[0]) { selectedFile = fileInput.files[0]; showImagePreview(fileInput.files[0]); }
 });
 
 function showImagePreview(file) {
@@ -54,7 +55,7 @@ generateBtn.addEventListener('click', startJob);
 
 async function startJob() {
   const description = descriptionEl.value.trim();
-  const imageFile = fileInput.files[0];
+  const imageFile = selectedFile || fileInput.files[0];
 
   if (!description && !imageFile) {
     alert('Please enter a description or upload an image.');
@@ -242,6 +243,7 @@ function renderFileList(files, jobId) {
 // ── New job ───────────────────────────────────────────────────────────────────
 newJobBtn.addEventListener('click', () => {
   currentJobId = null;
+  selectedFile = null;
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (viewer) { viewer.dispose(); viewer = null; }
   // Reset file input
