@@ -135,8 +135,37 @@ class AnalysisAgent:
             messages=[{"role": "user", "content": content}],
         )
 
+        if not response.content:
+            raise ValueError(
+                "LLM returned an empty response. "
+                "Check your OPENROUTER_API_KEY has credits at openrouter.ai."
+            )
+
         raw = response.content[0].text.strip()
-        data = json.loads(raw)
+
+        if not raw:
+            raise ValueError(
+                "LLM returned an empty text block. "
+                "The model may have been overloaded — try again in a moment."
+            )
+
+        # Strip markdown code fences if the model wrapped its JSON
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            raw = "\n".join(
+                l for l in lines
+                if not l.strip().startswith("```")
+            ).strip()
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            # Show first 300 chars of the bad response to help diagnose
+            preview = raw[:300].replace("\n", " ")
+            raise ValueError(
+                f"LLM response was not valid JSON ({exc}). "
+                f"Response preview: {preview!r}"
+            ) from exc
 
         parts = [
             SuggestedPart(
