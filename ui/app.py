@@ -188,9 +188,10 @@ async def _run_pipeline_async(
         _jobs[job_id]["result_dir"] = result_dir
         _emit(job_id, "done", f"Package ready — {result_dir.name}")
     except Exception as exc:
+        msg = _friendly_error(exc)
         _jobs[job_id]["status"] = "error"
-        _jobs[job_id]["error"] = str(exc)
-        _emit(job_id, "error", str(exc))
+        _jobs[job_id]["error"] = msg
+        _emit(job_id, "error", msg)
 
 
 def _run_pipeline_sync(
@@ -220,6 +221,23 @@ def _run_pipeline_sync(
         progress_callback=cb,
     )
     return result.package.output_dir
+
+
+def _friendly_error(exc: Exception) -> str:
+    msg = str(exc)
+    if "401" in msg or "User not found" in msg or "authentication" in msg.lower():
+        return (
+            "API key rejected (401 Unauthorized). "
+            "Open .env in the nanoclaw folder and check OPENROUTER_API_KEY — "
+            "it should start with sk-or-v1-. Get yours at openrouter.ai → Settings → API Keys."
+        )
+    if "403" in msg:
+        return "Access denied (403). Check that your API key has credits at openrouter.ai."
+    if "429" in msg:
+        return "Rate limit hit (429). Wait a moment and try again."
+    if "TRIPO3D" in msg or "tripo" in msg.lower():
+        return f"Tripo3D error: {msg}. Check TRIPO3D_API_KEY in .env."
+    return msg
 
 
 def _sse(data: dict) -> str:
