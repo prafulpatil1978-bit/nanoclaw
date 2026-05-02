@@ -286,8 +286,8 @@ _DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
 # "high"     = complex assemblies (6+ parts) → Sonnet (Opus not auto-selected; costs 5×)
 _COMPLEXITY_MODEL: dict[str, dict[str, str]] = {
     "openrouter": {
-        "analysis": "anthropic/claude-haiku-3-5",
-        "low":      "anthropic/claude-haiku-3-5",
+        "analysis": "anthropic/claude-3-5-haiku",
+        "low":      "anthropic/claude-3-5-haiku",
         "medium":   "anthropic/claude-sonnet-4-5",
         "high":     "anthropic/claude-sonnet-4-5",
     },
@@ -304,7 +304,7 @@ _SLUG_MAP = {
     "claude-opus-4-5":   "anthropic/claude-opus-4-5",
     "claude-sonnet-4-6": "anthropic/claude-sonnet-4-5",
     "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
-    "claude-haiku-4-5":  "anthropic/claude-haiku-3-5",
+    "claude-haiku-4-5":  "anthropic/claude-3-5-haiku",
 }
 
 
