@@ -15,27 +15,27 @@ cat > "$APP/Contents/MacOS/Nanoclaw" << 'LAUNCHER'
 #!/usr/bin/env bash
 PORT=7860
 
-open_browser() {
-  sleep 1   # brief pause so the browser doesn't race the server
-  if open -a "Google Chrome" "http://localhost:$PORT" 2>/dev/null; then return; fi
-  if open -a "Safari" "http://localhost:$PORT" 2>/dev/null; then return; fi
-  open "http://localhost:$PORT"
-}
+# Write the actual server-start script to /tmp (no macOS Desktop TCC restriction).
+# Terminal.app runs it from there — Terminal already has Desktop folder access.
+cat > /tmp/nanoclaw_start.sh << 'STARTSCRIPT'
+#!/usr/bin/env bash
+cd ~/Desktop/n8n-setup/nanoclaw
+nohup .venv/bin/python3 main.py serve --port 7860 >> /tmp/nanoclaw.log 2>&1 &
+echo $! > /tmp/nanoclaw.pid
+# Give uvicorn 3 s to write its "Running on..." line, then close this window
+sleep 3 && exit
+STARTSCRIPT
+chmod +x /tmp/nanoclaw_start.sh
 
-# If server already running, just open browser and exit
+# If server already running, just open browser and done
 if curl -s "http://localhost:$PORT" > /dev/null 2>&1; then
   open "http://localhost:$PORT"; exit 0
 fi
 
-# Delegate to Terminal.app, which already has macOS Desktop folder access.
-# The server starts in the background (disown) then Terminal closes itself.
-osascript << 'APPLESCRIPT'
-tell application "Terminal"
-  do script "cd ~/Desktop/n8n-setup/nanoclaw && .venv/bin/python3 main.py serve --port 7860 > /tmp/nanoclaw.log 2>&1 & disown && exit"
-end tell
-APPLESCRIPT
+# Ask Terminal.app to run the start script (Terminal has the necessary permissions)
+osascript -e 'tell application "Terminal" to do script "/tmp/nanoclaw_start.sh"'
 
-# Wait up to 20 s for the server to be ready, then open the browser
+# Wait up to 20 s for server to become reachable
 for i in $(seq 1 40); do
   sleep 0.5
   if curl -s "http://localhost:$PORT" > /dev/null 2>&1; then
@@ -43,7 +43,7 @@ for i in $(seq 1 40); do
   fi
 done
 
-# Timed out — open browser anyway (error will show in the page)
+# Timed out — open anyway; check /tmp/nanoclaw.log for errors
 open "http://localhost:$PORT"
 LAUNCHER
 chmod +x "$APP/Contents/MacOS/Nanoclaw"
