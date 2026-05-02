@@ -75,7 +75,7 @@ class Pipeline:
 
         # ── Stage 1: Analyse ────────────────────────────────────────────
         _progress("analyse", "Analysing input…")
-        analysis_agent = AnalysisAgent(model=self.analysis_model)
+        analysis_agent = AnalysisAgent(model=self.analysis_model, has_image=bool(image_path))
         obj_desc = analysis_agent.analyse(
             text_description=text_description,
             image_path=image_path,

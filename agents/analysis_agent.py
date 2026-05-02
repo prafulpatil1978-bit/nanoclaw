@@ -92,13 +92,14 @@ Do not include markdown, code fences, or any text outside the JSON.\
 
 
 class AnalysisAgent:
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, has_image: bool = False) -> None:
         self._unified = build_client()
         self.client = self._unified
-        # Analysis is lightweight JSON extraction — Haiku is sufficient and 5× cheaper.
-        # ANALYSIS_MODEL env var or explicit model arg overrides this default.
         _requested = model or os.environ.get("ANALYSIS_MODEL", "auto")
-        self.model = resolve_model(_requested, self._unified.messages._provider, complexity="analysis")
+        # Haiku via Amazon Bedrock (OpenRouter's cheapest route) doesn't support vision.
+        # When an image is provided we need at least Sonnet.
+        complexity = "medium" if has_image else "analysis"
+        self.model = resolve_model(_requested, self._unified.messages._provider, complexity=complexity)
 
     def analyse(
         self,
