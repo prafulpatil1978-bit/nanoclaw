@@ -10,6 +10,7 @@ from typing import Any
 
 from agents.analysis_agent import ObjectDescription
 from tools.openscad_tools import OpenSCADTools
+from utils.file_utils import load_image_as_base64
 from utils.llm_client import build_client, resolve_model
 
 
@@ -23,41 +24,61 @@ class DesignResult:
 
 
 _SYSTEM_PROMPT = """\
-You are an expert OpenSCAD programmer and mechanical engineer specialising in FDM 3D printing. \
-You will design a complete, parametric 3D model using the tools available to you.
+You are an expert OpenSCAD programmer and mechanical engineer specialising in FDM 3D printing.
+You will design a complete, parametric 3D model that closely matches the reference image \
+(if provided) AND the written specification.
 
-## Workflow
-1. Write the complete OpenSCAD model using `write_openscad_file` (filename: master.scad).
-2. Validate it with `validate_openscad_file`. Fix ALL errors.
-3. Confirm parts exist with `list_part_modules`.
-4. Render each part to STL with `render_part_to_stl`.
-5. When all parts are rendered (or skipped due to missing OpenSCAD), stop.
+## Workflow — follow every step in order
+1. Study the reference image carefully (if provided). Note the overall shape, proportions,
+   arm/body junctions, surface details, and any visible connection points.
+2. Write the complete OpenSCAD model with `write_openscad_file` (filename: master.scad).
+3. Validate with `validate_openscad_file`. Fix ALL errors before continuing.
+4. Confirm parts with `list_part_modules`.
+5. **Check connectors** with `check_connector_pairs`. If any part is flagged MISSING,
+   rewrite master.scad to add connectors, then re-validate. Do NOT skip this step.
+6. Render each part to STL with `render_part_to_stl`.
+7. Stop only when all parts are rendered (or OpenSCAD is unavailable).
+
+## Design fidelity (critical)
+- Match the silhouette and proportions of the reference image as closely as possible.
+- Reproduce distinctive shape features: swept arms, tapered profiles, cutouts, ribs,
+  slots, camera mounts, motor housings — whatever is visible in the image.
+- If the image shows curved or swept geometry, use `hull()` or `minkowski()` to approximate.
+- Prefer shape accuracy over simplicity.
+
+## Connector requirements (mandatory — enforced by check_connector_pairs)
+Every pair of mating parts MUST have explicit connector geometry on BOTH sides:
+- **Pin side**: `cylinder(d=4, h=8, $fn=20)` protruding 8 mm from the mating face.
+- **Socket side**: `difference()` with `cylinder(d=4.4, h=8.5, $fn=20)` subtracted
+  (0.4 mm diameter clearance + 0.5 mm depth clearance).
+- Label every connector with a comment: `// connector: arm_left → body (pin side)`
+- Drone-style designs: each arm must have a rectangular or dovetail slot that keys
+  into a matching recess in the central body — do NOT just butt-join with no geometry.
 
 ## OpenSCAD code requirements
-- Parameters section at the top (wall_thickness, layer_height, connector_d, etc.)
-- One `module part_<name>()` per printable part.
-- Each part must be self-contained and printable flat on the build plate.
-- Parts that mate together MUST have matching connector geometry:
-    - Alignment pin: cylinder(d=4, h=6) on one side
-    - Matching hole: cylinder(d=4.3, h=6) on the other (0.3 mm clearance)
-- An `assembly()` module that shows the full object assembled.
-- Final line: `assembly();` (for preview), with individual part calls commented out.
-- wall_thickness >= 1.2 mm (3 perimeters at 0.4 mm nozzle).
-- No part larger than 210×210×240 mm (leave 5 mm safety margin on each axis).
-- All geometry must be valid (watertight manifold).
+- Parameters block at top: wall_t, layer_h, connector_d=4, connector_h=8, clearance=0.4
+- One `module part_<name>()` per printable part — self-contained, flat on build plate.
+- `assembly()` module showing all parts in assembled position.
+- Final line: `assembly();`
+- wall_t >= 1.6 mm for structural parts (arms, body).
+- No part larger than 210×210×240 mm.
+- All geometry must be watertight (avoid `*` and `!` in final code).
 
 ## Print-quality guidelines
-- Prefer flat base faces to avoid supports.
-- Chamfer or fillet sharp bottom edges: `minkowski()` or `hull()`.
-- For hollow parts use `difference()` with inner offset = wall_thickness.
-- Label connectors in comments so the assembler knows which faces mate.
+- Flat base faces on bed — no supports if possible.
+- Chamfer bottom edges with `hull()` over slightly offset slabs.
+- Hollow bodies: `difference()` with inner shell offset by wall_t.
 
 ## Communication
-Think step-by-step. After each tool call, state what you did and what comes next.\
+Think step-by-step. After each tool call, state what you found and what you will do next.\
 """
 
 
-def _build_user_prompt(desc: ObjectDescription) -> str:
+def _build_user_prompt(
+    desc: ObjectDescription,
+    image_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return a content list (image block + text block) for the first user message."""
     parts_text = "\n".join(
         f"  - {p.name}: {p.description} "
         f"(~{p.estimated_dimensions_mm['x']:.0f}×"
@@ -65,12 +86,17 @@ def _build_user_prompt(desc: ObjectDescription) -> str:
         f"{p.estimated_dimensions_mm['z']:.0f} mm) {p.notes}"
         for p in desc.suggested_parts
     )
-    features_text = "\n".join(f"  - {f}" for f in desc.features)
-    considerations_text = "\n".join(f"  - {c}" for c in desc.print_considerations)
+    features_text  = "\n".join(f"  - {f}" for f in desc.features)
+    considerations = "\n".join(f"  - {c}" for c in desc.print_considerations)
 
-    return textwrap.dedent(f"""\
-        Design the following object as a multi-part 3D printable model.
+    image_note = (
+        "\nA reference image is attached above. "
+        "Use it as the primary design guide for shape, proportions, and joint details.\n"
+        if image_path else ""
+    )
 
+    text = textwrap.dedent(f"""\
+        Design the following object as a multi-part 3D printable model.{image_note}
         ## Object
         Name: {desc.name}
         Description: {desc.description}
@@ -93,14 +119,27 @@ def _build_user_prompt(desc: ObjectDescription) -> str:
         {desc.assembly_notes}
 
         ## Print considerations
-{considerations_text}
+{considerations}
 
-        Begin designing now. Write master.scad first.
+        IMPORTANT: After listing part modules, run check_connector_pairs and fix \
+any MISSING connectors before rendering.
+
+        Begin now — study the image first, then write master.scad.
     """)
+
+    content: list[dict[str, Any]] = []
+    if image_path and Path(image_path).exists():
+        img_data, media_type = load_image_as_base64(image_path)
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": img_data},
+        })
+    content.append({"type": "text", "text": text})
+    return content
 
 
 class DesignAgent:
-    MAX_ITERATIONS = 20
+    MAX_ITERATIONS = 24   # extra headroom for connector re-write iteration
 
     def __init__(self, work_dir: str | Path, model: str | None = None) -> None:
         self._unified = build_client()
@@ -110,9 +149,16 @@ class DesignAgent:
         self.work_dir = Path(work_dir)
         self.osc = OpenSCADTools(work_dir=work_dir)
 
-    def design(self, description: ObjectDescription) -> DesignResult:
+    def design(
+        self,
+        description: ObjectDescription,
+        image_path: str | Path | None = None,
+    ) -> DesignResult:
+        image_path = Path(image_path) if image_path else None
+        first_content = _build_user_prompt(description, image_path)
+
         messages: list[dict[str, Any]] = [
-            {"role": "user", "content": _build_user_prompt(description)}
+            {"role": "user", "content": first_content}
         ]
         result = DesignResult(
             master_scad_path=self.work_dir / "master.scad",
@@ -158,7 +204,6 @@ class DesignAgent:
                     }
                 )
 
-                # Track rendered STL paths
                 if block.name == "render_part_to_stl" and tool_output.startswith("OK"):
                     stl_path = self.work_dir / block.input["stl_filename"]
                     if stl_path.exists():

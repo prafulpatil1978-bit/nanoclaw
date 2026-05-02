@@ -92,7 +92,7 @@ class Pipeline:
         elif mode == "mesh":
             partition = self._run_mesh_mode(obj_desc, image_path, work_dir, slug, _progress)
         else:
-            partition = self._run_parametric_mode(obj_desc, work_dir, _progress)
+            partition = self._run_parametric_mode(obj_desc, work_dir, _progress, image_path=image_path)
 
         # ── Stage 4: Package ─────────────────────────────────────────────
         _progress("package", "Assembling delivery package…")
@@ -167,13 +167,15 @@ class Pipeline:
         _progress("partition", f"{len(parts)} output file(s) from part-gen")
         return PR(parts=parts, master_scad_path=work_dir / "master.scad", warnings=result.warnings)
 
-    def _run_parametric_mode(self, obj_desc, work_dir, _progress) -> PartitionResult:
+    def _run_parametric_mode(self, obj_desc, work_dir, _progress, image_path=None) -> PartitionResult:
         from agents.design_agent import DesignAgent
         from pipeline.partitioner import Partitioner
 
         _progress("design", "Generating parametric 3D design (OpenSCAD)…")
+        if image_path:
+            _progress("design", "Reference image attached — agent will match visual design")
         design_agent = DesignAgent(work_dir=work_dir, model=self.design_model)
-        design = design_agent.design(obj_desc)
+        design = design_agent.design(obj_desc, image_path=image_path)
         _progress("design", f"Design complete — {len(design.part_modules)} modules")
 
         _progress("partition", "Creating per-part SCAD files…")

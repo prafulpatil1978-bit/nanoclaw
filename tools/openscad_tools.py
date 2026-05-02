@@ -80,6 +80,26 @@ class OpenSCADTools:
             },
         },
         {
+            "name": "check_connector_pairs",
+            "description": (
+                "Scan master.scad and verify every part that mates with another part has "
+                "matching connector geometry (pin on one side, hole on the other). "
+                "Returns a report listing which pairs are correctly connected and which are MISSING connectors. "
+                "Call this AFTER list_part_modules and BEFORE render_part_to_stl. "
+                "If any part is missing connectors, rewrite the file to add them."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename of the .scad file to check",
+                    }
+                },
+                "required": ["filename"],
+            },
+        },
+        {
             "name": "render_part_to_stl",
             "description": (
                 "Render a single part module from an OpenSCAD file to an STL file. "
@@ -181,6 +201,66 @@ class OpenSCADTools:
             wrapper_path.unlink(missing_ok=True)
             return f"ERROR: {exc}"
 
+    def check_connector_pairs(self, filename: str) -> str:
+        path = self.work_dir / filename
+        if not path.exists():
+            return f"ERROR: File not found: {path}"
+        code = path.read_text(encoding="utf-8")
+
+        # Find all part_* modules
+        modules = re.findall(r"^module\s+(part_\w+)\s*\(", code, re.MULTILINE)
+        if len(modules) < 2:
+            return "OK: Only one part — no connectors needed."
+
+        # Extract per-module bodies
+        report_lines = []
+        missing = []
+        for mod in modules:
+            # Grab the module body between its braces
+            pattern = rf"module\s+{re.escape(mod)}\s*\(\)[^{{]*\{{"
+            m = re.search(pattern, code)
+            if not m:
+                continue
+            start = m.end() - 1
+            depth, body_start = 0, start
+            body = ""
+            for i, ch in enumerate(code[start:], start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        body = code[body_start : i + 1]
+                        break
+
+            has_pin  = bool(re.search(r"cylinder\s*\(", body) and "connector" in body.lower()
+                           or re.search(r"//.*pin", body, re.IGNORECASE)
+                           or re.search(r"connector_pin|pin_h|pin_d|slot_w|dovetail", body, re.IGNORECASE))
+            has_hole = bool(re.search(r"difference\s*\(\s*\)", body)
+                           or "hole" in body.lower()
+                           or re.search(r"connector_hole|slot|socket", body, re.IGNORECASE))
+            has_any  = has_pin or has_hole or re.search(
+                r"(cylinder|cube|slot|dovetail|snap|latch|pin|socket|hole)", body, re.IGNORECASE
+            ) is not None and "difference" in body
+
+            if has_pin and has_hole:
+                report_lines.append(f"  OK  {mod}: has both pin and matching hole geometry")
+            elif has_any:
+                report_lines.append(f"  OK  {mod}: has connector-like geometry")
+            else:
+                report_lines.append(f"  MISSING  {mod}: no connector geometry detected")
+                missing.append(mod)
+
+        summary = "\n".join(report_lines)
+        if missing:
+            return (
+                f"CONNECTOR CHECK FAILED — {len(missing)} part(s) missing connectors:\n"
+                f"{summary}\n\n"
+                f"You MUST rewrite master.scad to add matching pin+hole connectors "
+                f"on all mating faces before rendering."
+            )
+        return f"CONNECTOR CHECK PASSED:\n{summary}"
+
     def dispatch(self, tool_name: str, tool_input: dict) -> str:
         if tool_name == "write_openscad_file":
             return self.write_openscad_file(**tool_input)
@@ -188,6 +268,8 @@ class OpenSCADTools:
             return self.validate_openscad_file(**tool_input)
         if tool_name == "list_part_modules":
             return self.list_part_modules(**tool_input)
+        if tool_name == "check_connector_pairs":
+            return self.check_connector_pairs(**tool_input)
         if tool_name == "render_part_to_stl":
             return self.render_part_to_stl(**tool_input)
         return f"ERROR: Unknown tool '{tool_name}'"

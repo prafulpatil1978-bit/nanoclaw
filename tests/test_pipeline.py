@@ -652,6 +652,94 @@ def test_analysis_null_template_hint():
     assert desc.template_hint is None, f"Expected None, got {desc.template_hint!r}"
 
 
+@test("design_agent: image passed through to first user message")
+def test_design_agent_image_passthrough():
+    import unittest.mock as mock
+    from agents.design_agent import _build_user_prompt
+    from agents.analysis_agent import ObjectDescription
+
+    desc = ObjectDescription(
+        name="Drone Frame",
+        description="A quadcopter drone frame.",
+        overall_dimensions_mm={"x": 300, "y": 300, "z": 80},
+        features=["four arms", "central body"],
+        suggested_parts=[],
+        structural_requirements="",
+        print_considerations=[],
+        assembly_notes="",
+    )
+
+    # Without image — should be a single text block
+    content_no_img = _build_user_prompt(desc, image_path=None)
+    assert len(content_no_img) == 1
+    assert content_no_img[0]["type"] == "text"
+
+    # With image — should prepend an image block
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        # Write a minimal 1×1 white PNG
+        import base64
+        png_1x1 = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        f.write(png_1x1)
+        img_path = Path(f.name)
+
+    try:
+        content_with_img = _build_user_prompt(desc, image_path=img_path)
+        assert len(content_with_img) == 2, f"Expected 2 blocks, got {len(content_with_img)}"
+        assert content_with_img[0]["type"] == "image"
+        assert content_with_img[1]["type"] == "text"
+        assert "reference image" in content_with_img[1]["text"].lower()
+    finally:
+        img_path.unlink(missing_ok=True)
+
+
+@test("openscad_tools: check_connector_pairs detects missing connectors")
+def test_check_connector_pairs():
+    from tools.openscad_tools import OpenSCADTools
+
+    with tempfile.TemporaryDirectory() as tmp:
+        osc = OpenSCADTools(work_dir=tmp)
+
+        # Code with no connector geometry
+        bad_code = """\
+module part_body() {
+    cube([100, 80, 20]);
+}
+module part_arm() {
+    cube([60, 15, 10]);
+}
+module assembly() { part_body(); translate([100,0,0]) part_arm(); }
+assembly();
+"""
+        osc.write_openscad_file("master.scad", bad_code)
+        result = osc.check_connector_pairs("master.scad")
+        assert "MISSING" in result or "FAILED" in result, f"Expected missing connectors: {result}"
+
+        # Code WITH connector geometry
+        good_code = """\
+connector_d = 4; connector_h = 8; clearance = 0.4;
+module part_body() {
+    difference() {
+        cube([100, 80, 20]);
+        // connector: body → arm (socket side)
+        translate([95, 7.5, 5]) cylinder(d=connector_d+clearance, h=connector_h+1, $fn=20);
+    }
+}
+module part_arm() {
+    cube([60, 15, 10]);
+    // connector: arm → body (pin side)
+    translate([-connector_h, 7.5-connector_d/2, 5])
+        rotate([0,90,0]) cylinder(d=connector_d, h=connector_h, $fn=20);
+}
+module assembly() { part_body(); translate([100,0,0]) part_arm(); }
+assembly();
+"""
+        osc.write_openscad_file("master.scad", good_code)
+        result2 = osc.check_connector_pairs("master.scad")
+        assert "PASSED" in result2 or "OK" in result2, f"Expected pass: {result2}"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Live API tests (require ANTHROPIC_API_KEY)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -760,6 +848,8 @@ if __name__ == "__main__":
         test_friendly_error()
         test_analysis_json_parsing()
         test_analysis_null_template_hint()
+        test_design_agent_image_passthrough()
+        test_check_connector_pairs()
 
     if not offline_only:
         print("\n── Live API tests ──")
