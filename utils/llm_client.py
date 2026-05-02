@@ -1,9 +1,13 @@
-"""Unified LLM client — works with Anthropic API or OpenRouter.
+"""Unified LLM client — works with Anthropic API, OpenRouter, or Ollama (local).
 
-Priority: OPENROUTER_API_KEY → ANTHROPIC_API_KEY
+Priority: OPENROUTER_API_KEY → ANTHROPIC_API_KEY → Ollama (local)
 
-For OpenRouter, all Claude models are accessed as  "anthropic/<model-slug>".
-Default OpenRouter model: anthropic/claude-3.5-sonnet (override via OPENROUTER_MODEL).
+Automatic fallback: if the primary cloud provider returns a rate-limit or
+network error, the client transparently retries via Ollama (if it is running).
+
+Complexity-based routing: pass complexity="low"|"medium"|"high" (or "analysis")
+to resolve_model() and it will choose the cheapest model that can handle the
+task. "auto" as a model name triggers this routing automatically.
 
 The client is a drop-in for the Anthropic SDK in our agents:
   client = build_client()
@@ -16,9 +20,11 @@ The client is a drop-in for the Anthropic SDK in our agents:
 from __future__ import annotations
 
 import json
+import logging
 import os
-from dataclasses import dataclass, field
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 # ── Fake Anthropic-shaped response objects ─────────────────────────────────
@@ -180,6 +186,7 @@ class _Messages:
     ) -> _Response:
         if self._provider == "anthropic":
             return self._anthropic_create(model, max_tokens, system, messages, tools)
+        # openrouter and ollama both use the OpenAI-compatible path
         return self._openrouter_create(model, max_tokens, system, messages, tools)
 
     def _anthropic_create(self, model, max_tokens, system, messages, tools):
@@ -215,8 +222,54 @@ class _Messages:
 class UnifiedClient:
     """Drop-in replacement for anthropic.Anthropic() in our agents."""
 
-    def __init__(self, provider: str, raw_client) -> None:
-        self.messages = _Messages(provider, raw_client)
+    def __init__(self, provider: str, raw_client, fallback_messages=None) -> None:
+        primary = _Messages(provider, raw_client)
+        if fallback_messages is not None:
+            self.messages = _SmartMessages(primary, fallback_messages)
+        else:
+            self.messages = primary
+
+
+def _is_provider_error(exc: Exception) -> bool:
+    """True for retriable errors (rate limit, network) — not for auth failures."""
+    msg = str(exc).lower()
+    # Auth failures should surface to the user; Ollama can't fix them
+    if any(w in msg for w in ("401", "403", "unauthorized", "forbidden", "user not found")):
+        return False
+    return any(w in msg for w in (
+        "429", "500", "502", "503", "504",
+        "rate limit", "timeout", "connection", "server error", "overloaded",
+    ))
+
+
+class _SmartMessages:
+    """Primary provider with transparent Ollama fallback on retriable errors."""
+
+    def __init__(self, primary: _Messages, fallback: _Messages) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        # Expose _provider so resolve_model() continues to work correctly
+        self._provider = primary._provider
+
+    def create(
+        self,
+        model: str,
+        max_tokens: int,
+        system=None,
+        messages: list | None = None,
+        tools: list | None = None,
+    ) -> _Response:
+        try:
+            return self._primary.create(model, max_tokens, system, messages, tools)
+        except Exception as exc:
+            if _is_provider_error(exc):
+                ollama_model = os.environ.get("OLLAMA_MODEL", _DEFAULT_OLLAMA_MODEL)
+                _log.warning(
+                    "Primary provider error (%s) — falling back to Ollama (%s)",
+                    exc, ollama_model,
+                )
+                return self._fallback.create(ollama_model, max_tokens, system, messages, tools)
+            raise
 
 
 # ── Factory ────────────────────────────────────────────────────────────────
@@ -226,12 +279,32 @@ _OLLAMA_BASE = "http://localhost:11434/v1"
 _DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-5"  # cost-effective default
 _DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
 
-# Per-role model defaults (override via env vars)
-# Analysis needs vision capability → sonnet
-# Design is agentic code-writing → sonnet is sufficient, opus overkill
-ROLE_DEFAULTS = {
-    "analysis": "claude-sonnet-4-6",
-    "design":   "claude-sonnet-4-6",
+# Complexity → cheapest model that can reliably handle the task
+# "analysis" = lightweight JSON extraction → always Haiku
+# "low"      = simple geometry (≤2 parts) → Haiku
+# "medium"   = moderate (3–5 parts) → Sonnet
+# "high"     = complex assemblies (6+ parts) → Sonnet (Opus not auto-selected; costs 5×)
+_COMPLEXITY_MODEL: dict[str, dict[str, str]] = {
+    "openrouter": {
+        "analysis": "anthropic/claude-haiku-3-5",
+        "low":      "anthropic/claude-haiku-3-5",
+        "medium":   "anthropic/claude-sonnet-4-5",
+        "high":     "anthropic/claude-sonnet-4-5",
+    },
+    "anthropic": {
+        "analysis": "claude-haiku-4-5-20251001",
+        "low":      "claude-haiku-4-5-20251001",
+        "medium":   "claude-sonnet-4-6",
+        "high":     "claude-sonnet-4-6",
+    },
+}
+
+_SLUG_MAP = {
+    "claude-opus-4-7":   "anthropic/claude-opus-4-5",
+    "claude-opus-4-5":   "anthropic/claude-opus-4-5",
+    "claude-sonnet-4-6": "anthropic/claude-sonnet-4-5",
+    "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
+    "claude-haiku-4-5":  "anthropic/claude-haiku-3-5",
 }
 
 
@@ -244,10 +317,21 @@ def _ollama_running() -> bool:
         return False
 
 
+def _build_ollama_messages() -> _Messages | None:
+    """Return an Ollama _Messages if the daemon is reachable, else None."""
+    if _ollama_running():
+        from openai import OpenAI
+        return _Messages("ollama", OpenAI(base_url=_OLLAMA_BASE, api_key="ollama"))
+    return None
+
+
 def build_client() -> UnifiedClient:
     """Return a UnifiedClient using whichever key/service is available.
 
     Priority: OPENROUTER_API_KEY → ANTHROPIC_API_KEY → Ollama (local)
+
+    When a cloud provider is primary, Ollama is wired as a silent fallback:
+    rate-limit / network errors automatically retry via Ollama.
     """
     or_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     ant_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -256,14 +340,16 @@ def build_client() -> UnifiedClient:
     if or_key and not use_ollama:
         from openai import OpenAI
         raw = OpenAI(base_url=_OPENROUTER_BASE, api_key=or_key)
-        return UnifiedClient("openrouter", raw)
+        fallback = _build_ollama_messages()
+        return UnifiedClient("openrouter", raw, fallback_messages=fallback)
 
     if ant_key and not use_ollama:
         import anthropic
         raw = anthropic.Anthropic(api_key=ant_key)
-        return UnifiedClient("anthropic", raw)
+        fallback = _build_ollama_messages()
+        return UnifiedClient("anthropic", raw, fallback_messages=fallback)
 
-    # Ollama — free local fallback (or explicit USE_OLLAMA=1)
+    # Ollama — free local (explicit USE_OLLAMA=1 or auto-detected)
     if use_ollama or _ollama_running():
         from openai import OpenAI
         raw = OpenAI(base_url=_OLLAMA_BASE, api_key="ollama")
@@ -275,23 +361,49 @@ def build_client() -> UnifiedClient:
     )
 
 
-def resolve_model(requested: str | None, provider: str) -> str:
-    """Map a model name to the correct format for the active provider."""
-    if provider == "anthropic":
-        return requested or "claude-opus-4-7"
+def score_complexity(obj_desc) -> str:
+    """Estimate design complexity from an ObjectDescription.
 
+    Returns "low", "medium", or "high". Used to select the cheapest model
+    that can reliably handle the design task.
+    """
+    num_parts  = len(getattr(obj_desc, "suggested_parts", []))
+    desc_words = len((getattr(obj_desc, "description", "") or "").split())
+    features   = len(getattr(obj_desc, "features", []))
+    score = num_parts * 3 + (desc_words // 20) + (features // 3)
+    if score >= 10:
+        return "high"
+    if score >= 5:
+        return "medium"
+    return "low"
+
+
+def resolve_model(requested: str | None, provider: str, complexity: str = "medium") -> str:
+    """Map a model name/complexity hint to the correct string for the active provider.
+
+    Special values for ``requested``:
+      - None / "" / "auto"  → complexity-based routing (cheapest capable model)
+      - any explicit model  → mapped to provider format and used as-is
+    """
+    # Ollama always uses whatever model is configured locally
     if provider == "ollama":
         return os.environ.get("OLLAMA_MODEL", _DEFAULT_OLLAMA_MODEL)
 
-    # OpenRouter — use env override or map Anthropic names to OpenRouter slugs
-    if os.environ.get("OPENROUTER_MODEL"):
+    # Auto or unset → pick by complexity
+    is_auto = not requested or requested == "auto"
+
+    if provider == "anthropic":
+        if is_auto:
+            return _COMPLEXITY_MODEL["anthropic"].get(complexity, "claude-sonnet-4-6")
+        return requested  # pass explicit model through unchanged
+
+    # OpenRouter
+    if os.environ.get("OPENROUTER_MODEL") and is_auto:
+        # Env-level override takes priority over auto-routing
         return os.environ["OPENROUTER_MODEL"]
 
-    slug_map = {
-        "claude-opus-4-7":   "anthropic/claude-opus-4-5",
-        "claude-opus-4-5":   "anthropic/claude-opus-4-5",
-        "claude-sonnet-4-6": "anthropic/claude-sonnet-4-5",
-        "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
-        "claude-haiku-4-5":  "anthropic/claude-haiku-3-5",
-    }
-    return slug_map.get(requested or "", _DEFAULT_OPENROUTER_MODEL)
+    if is_auto:
+        return _COMPLEXITY_MODEL["openrouter"].get(complexity, _DEFAULT_OPENROUTER_MODEL)
+
+    # Explicit model name — map Anthropic slugs to OpenRouter format
+    return _SLUG_MAP.get(requested, requested)  # pass unknown names through unchanged

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.file_utils import load_image_as_base64
-from utils.llm_client import build_client, resolve_model
+from utils.llm_client import build_client, resolve_model, score_complexity
 
 
 @dataclass
@@ -95,8 +95,10 @@ class AnalysisAgent:
     def __init__(self, model: str | None = None) -> None:
         self._unified = build_client()
         self.client = self._unified
-        _requested = model or os.environ.get("ANALYSIS_MODEL", "claude-sonnet-4-6")
-        self.model = resolve_model(_requested, self._unified.messages._provider)
+        # Analysis is lightweight JSON extraction — Haiku is sufficient and 5× cheaper.
+        # ANALYSIS_MODEL env var or explicit model arg overrides this default.
+        _requested = model or os.environ.get("ANALYSIS_MODEL", "auto")
+        self.model = resolve_model(_requested, self._unified.messages._provider, complexity="analysis")
 
     def analyse(
         self,

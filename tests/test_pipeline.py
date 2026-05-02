@@ -542,9 +542,14 @@ def test_llm_client_no_keys():
 @test("llm_client: resolve_model maps Anthropic names to OpenRouter slugs")
 def test_resolve_model():
     from utils.llm_client import resolve_model
+    # Explicit model names are mapped correctly
     assert "claude" in resolve_model("claude-opus-4-7", "openrouter").lower()
-    assert resolve_model(None, "anthropic") == "claude-opus-4-7"
-    # Ollama always uses env or default
+    assert "haiku" in resolve_model("claude-haiku-4-5", "openrouter").lower()
+    # None / "auto" → complexity-based routing (medium → Sonnet)
+    assert "sonnet" in resolve_model(None, "anthropic", complexity="medium").lower()
+    assert "haiku" in resolve_model("auto", "anthropic", complexity="low").lower()
+    assert "haiku" in resolve_model(None, "openrouter", complexity="analysis").lower()
+    # Ollama always uses env or default (ignores model name)
     m = resolve_model("claude-opus-4-7", "ollama")
     assert m  # non-empty string
 

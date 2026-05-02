@@ -20,6 +20,7 @@ from agents.analysis_agent import AnalysisAgent, ObjectDescription
 from pipeline.packager import PackageResult, Packager
 from pipeline.partitioner import PartitionResult
 from utils.file_utils import ensure_dir, safe_filename
+from utils.llm_client import score_complexity
 
 PipelineMode = Literal["partgen", "parametric", "mesh", "auto"]
 MeshBackendName = Literal["shape-e", "tripo3d", "meshy"]
@@ -87,6 +88,10 @@ class Pipeline:
         slug = safe_filename(obj_desc.name)
         work_dir = ensure_dir(self.output_root / f"_work_{slug}")
 
+        # Score complexity once so all downstream agents use a consistent tier
+        complexity = score_complexity(obj_desc)
+        _progress("analyse", f"Complexity: {complexity} ({len(obj_desc.suggested_parts)} parts)")
+
         # ── Mode selection ───────────────────────────────────────────────
         mode = self._resolve_mode(obj_desc)
         _progress("mode", f"Pipeline mode: {mode}")
@@ -97,7 +102,7 @@ class Pipeline:
             partition = self._run_mesh_mode(obj_desc, image_path, work_dir, slug, _progress)
         else:
             result = self._run_parametric_mode(
-                obj_desc, work_dir, _progress, image_path=image_path
+                obj_desc, work_dir, _progress, image_path=image_path, complexity=complexity
             )
             if isinstance(result, dict) and result.get("scad_only"):
                 # Two-stage: return early with SCAD path, no package yet
@@ -191,14 +196,14 @@ class Pipeline:
         _progress("partition", f"{len(parts)} output file(s) from part-gen")
         return PR(parts=parts, master_scad_path=work_dir / "master.scad", warnings=result.warnings)
 
-    def _run_parametric_mode(self, obj_desc, work_dir, _progress, image_path=None):
+    def _run_parametric_mode(self, obj_desc, work_dir, _progress, image_path=None, complexity="medium"):
         from agents.design_agent import DesignAgent
         from pipeline.partitioner import Partitioner
 
         _progress("design", "Generating parametric 3D design (OpenSCAD)…")
         if image_path:
             _progress("design", "Reference image attached — agent will match visual design")
-        design_agent = DesignAgent(work_dir=work_dir, model=self.design_model)
+        design_agent = DesignAgent(work_dir=work_dir, model=self.design_model, complexity=complexity)
         design = design_agent.design(obj_desc, image_path=image_path)
         _progress("design", f"Design complete — {len(design.part_modules)} modules")
 

@@ -11,7 +11,7 @@ from typing import Any
 from agents.analysis_agent import ObjectDescription
 from tools.openscad_tools import OpenSCADTools
 from utils.file_utils import load_image_as_base64
-from utils.llm_client import build_client, resolve_model
+from utils.llm_client import build_client, resolve_model, score_complexity
 
 
 @dataclass
@@ -181,11 +181,17 @@ def _compress_history(messages: list[dict]) -> None:
 class DesignAgent:
     MAX_ITERATIONS = 24   # extra headroom for connector re-write iteration
 
-    def __init__(self, work_dir: str | Path, model: str | None = None) -> None:
+    def __init__(
+        self,
+        work_dir: str | Path,
+        model: str | None = None,
+        complexity: str = "medium",
+    ) -> None:
         self._unified = build_client()
         self.client = self._unified
-        _requested = model or os.environ.get("DESIGN_MODEL", "claude-sonnet-4-6")
-        self.model = resolve_model(_requested, self._unified.messages._provider)
+        # "auto" → complexity-based routing; explicit model → use as-is
+        _requested = model or os.environ.get("DESIGN_MODEL", "auto")
+        self.model = resolve_model(_requested, self._unified.messages._provider, complexity=complexity)
         self.work_dir = Path(work_dir)
         self.osc = OpenSCADTools(work_dir=work_dir)
 
