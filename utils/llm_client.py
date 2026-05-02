@@ -223,8 +223,16 @@ class UnifiedClient:
 
 _OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 _OLLAMA_BASE = "http://localhost:11434/v1"
-_DEFAULT_OPENROUTER_MODEL = "anthropic/claude-3.5-sonnet"
+_DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4-5"  # cost-effective default
 _DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
+
+# Per-role model defaults (override via env vars)
+# Analysis needs vision capability → sonnet
+# Design is agentic code-writing → sonnet is sufficient, opus overkill
+ROLE_DEFAULTS = {
+    "analysis": "claude-sonnet-4-6",
+    "design":   "claude-sonnet-4-6",
+}
 
 
 def _ollama_running() -> bool:
@@ -283,6 +291,7 @@ def resolve_model(requested: str | None, provider: str) -> str:
         "claude-opus-4-7":   "anthropic/claude-opus-4-5",
         "claude-opus-4-5":   "anthropic/claude-opus-4-5",
         "claude-sonnet-4-6": "anthropic/claude-sonnet-4-5",
+        "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
         "claude-haiku-4-5":  "anthropic/claude-haiku-3-5",
     }
     return slug_map.get(requested or "", _DEFAULT_OPENROUTER_MODEL)

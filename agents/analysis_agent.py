@@ -95,7 +95,7 @@ class AnalysisAgent:
     def __init__(self, model: str | None = None) -> None:
         self._unified = build_client()
         self.client = self._unified
-        _requested = model or os.environ.get("ANALYSIS_MODEL", "claude-opus-4-7")
+        _requested = model or os.environ.get("ANALYSIS_MODEL", "claude-sonnet-4-6")
         self.model = resolve_model(_requested, self._unified.messages._provider)
 
     def analyse(

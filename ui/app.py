@@ -33,8 +33,25 @@ _STATIC = _HERE / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
 # ── Job store (in-memory, per process) ───────────────────────────────────────
-_jobs: dict[str, dict] = {}   # job_id → {status, progress_events, result_dir, error}
+_jobs: dict[str, dict] = {}   # job_id → {status, progress, result_dir, error, scad_dir}
 _queues: dict[str, asyncio.Queue] = {}   # job_id → SSE queue
+
+# Model cost table ($ per 1M tokens, OpenRouter)
+MODEL_COSTS = {
+    "claude-sonnet-4-6": {"label": "Sonnet 4.5 (recommended)",  "in": 3.00,  "out": 15.00},
+    "claude-haiku-4-5":  {"label": "Haiku 3.5 (cheapest)",      "in": 0.80,  "out":  4.00},
+    "claude-opus-4-7":   {"label": "Opus 4.5 (best quality)",   "in": 15.00, "out": 75.00},
+    "ollama":            {"label": "Ollama local (free)",        "in": 0,     "out":  0},
+}
+
+def _estimate_cost(model: str, iterations: int = 10) -> str:
+    c = MODEL_COSTS.get(model, MODEL_COSTS["claude-sonnet-4-6"])
+    if c["in"] == 0:
+        return "Free (local)"
+    inp_tok  = iterations * 8_000   # rough: growing history
+    out_tok  = iterations * 2_500
+    cost = (inp_tok * c["in"] + out_tok * c["out"]) / 1_000_000
+    return f"~${cost:.2f}"
 
 
 def _emit(job_id: str, stage: str, message: str) -> None:
@@ -56,11 +73,22 @@ async def index():
     return FileResponse(str(_STATIC / "index.html"))
 
 
+@app.get("/api/models")
+async def list_models():
+    """Return available models with cost estimates."""
+    return {
+        model: {**info, "cost_per_run": _estimate_cost(model)}
+        for model, info in MODEL_COSTS.items()
+    }
+
+
 @app.post("/api/generate")
 async def generate(
     description: str = Form(""),
     mode: str = Form("auto"),
     backend: str = Form("tripo3d"),
+    design_model: str = Form("claude-sonnet-4-6"),
+    two_stage: str = Form("false"),   # "true" → stop after SCAD, wait for approval
     image: UploadFile | None = File(None),
 ):
     """Start a pipeline job. Returns {job_id}."""
@@ -68,7 +96,13 @@ async def generate(
         raise HTTPException(400, "Provide a description or upload an image.")
 
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "queued", "progress": [], "result_dir": None, "error": None}
+    _jobs[job_id] = {
+        "status": "queued", "progress": [], "result_dir": None,
+        "error": None, "scad_dir": None, "meta": {
+            "mode": mode, "backend": backend, "design_model": design_model,
+            "two_stage": two_stage == "true",
+        }
+    }
     _queues[job_id] = asyncio.Queue(maxsize=256)
 
     # Save uploaded image
@@ -83,10 +117,33 @@ async def generate(
 
     # Run pipeline in a background thread (it's blocking / sync)
     asyncio.create_task(
-        _run_pipeline_async(job_id, description or None, image_path, mode, backend)
+        _run_pipeline_async(
+            job_id, description or None, image_path, mode, backend,
+            design_model=design_model,
+            two_stage=(two_stage == "true"),
+        )
     )
 
     return {"job_id": job_id}
+
+
+@app.post("/api/jobs/{job_id}/approve-render")
+async def approve_render(job_id: str):
+    """Stage-2 trigger: approve the SCAD design and start STL rendering."""
+    if job_id not in _jobs:
+        raise HTTPException(404, "Job not found")
+    j = _jobs[job_id]
+    if j["status"] != "awaiting_approval":
+        raise HTTPException(400, f"Job is in status '{j['status']}', not awaiting_approval")
+
+    j["status"] = "rendering"
+    _emit(job_id, "design", "Approval received — starting STL rendering…")
+
+    loop = asyncio.get_event_loop()
+    asyncio.create_task(
+        _run_render_stage_async(job_id)
+    )
+    return {"ok": True}
 
 
 @app.get("/api/jobs/{job_id}/events")
@@ -175,23 +232,79 @@ async def _run_pipeline_async(
     image_path: Path | None,
     mode: str,
     backend: str,
+    design_model: str = "claude-sonnet-4-6",
+    two_stage: bool = False,
 ) -> None:
     _jobs[job_id]["status"] = "running"
     loop = asyncio.get_event_loop()
     try:
-        result_dir = await loop.run_in_executor(
-            None,
-            _run_pipeline_sync,
-            job_id, description, image_path, mode, backend,
+        result = await loop.run_in_executor(
+            None, _run_pipeline_sync,
+            job_id, description, image_path, mode, backend, design_model, two_stage,
         )
-        _jobs[job_id]["status"] = "done"
-        _jobs[job_id]["result_dir"] = result_dir
-        _emit(job_id, "done", f"Package ready — {result_dir.name}")
+        if two_stage and isinstance(result, dict) and result.get("awaiting_approval"):
+            _jobs[job_id]["status"] = "awaiting_approval"
+            _jobs[job_id]["scad_dir"] = result["scad_dir"]
+            _emit(job_id, "approval", (
+                "Design draft ready — review the SCAD files below, then click "
+                "'Approve & Render STL' to continue."
+            ))
+        else:
+            _jobs[job_id]["status"] = "done"
+            _jobs[job_id]["result_dir"] = result
+            _emit(job_id, "done", f"Package ready — {Path(result).name}")
     except Exception as exc:
         msg = _friendly_error(exc)
         _jobs[job_id]["status"] = "error"
         _jobs[job_id]["error"] = msg
         _emit(job_id, "error", msg)
+
+
+async def _run_render_stage_async(job_id: str) -> None:
+    loop = asyncio.get_event_loop()
+    try:
+        result_dir = await loop.run_in_executor(None, _run_render_stage_sync, job_id)
+        _jobs[job_id]["status"] = "done"
+        _jobs[job_id]["result_dir"] = result_dir
+        _emit(job_id, "done", f"STL rendering complete — {result_dir.name}")
+    except Exception as exc:
+        msg = _friendly_error(exc)
+        _jobs[job_id]["status"] = "error"
+        _jobs[job_id]["error"] = msg
+        _emit(job_id, "error", msg)
+
+
+def _run_render_stage_sync(job_id: str) -> Path:
+    """Second stage: render SCAD files that were already written."""
+    from dotenv import load_dotenv
+    load_dotenv()
+    from tools.openscad_tools import OpenSCADTools
+    from pipeline.partitioner import Partitioner, PartitionResult
+
+    scad_dir = _jobs[job_id].get("scad_dir")
+    if not scad_dir or not Path(scad_dir).exists():
+        raise RuntimeError("No SCAD directory from stage 1 — cannot render")
+
+    _emit(job_id, "partition", "Rendering SCAD parts to STL…")
+    osc = OpenSCADTools(work_dir=scad_dir)
+    master = Path(scad_dir) / "master.scad"
+    if not master.exists():
+        raise RuntimeError(f"master.scad not found in {scad_dir}")
+
+    modules_out = osc.list_part_modules("master.scad")
+    modules = [m for m in modules_out.splitlines() if m.startswith("part_")]
+    stl_paths = []
+    for mod in modules:
+        stl_name = f"{mod}.stl"
+        out = osc.render_part_to_stl("master.scad", mod, stl_name)
+        _emit(job_id, "partition", f"{mod}: {out[:80]}")
+        stl_p = Path(scad_dir) / stl_name
+        if stl_p.exists():
+            stl_paths.append(stl_p)
+
+    # Return scad_dir as result so file listing works
+    _jobs[job_id]["result_dir"] = Path(scad_dir)
+    return Path(scad_dir)
 
 
 def _run_pipeline_sync(
@@ -200,7 +313,9 @@ def _run_pipeline_sync(
     image_path: Path | None,
     mode: str,
     backend: str,
-) -> Path:
+    design_model: str = "claude-sonnet-4-6",
+    two_stage: bool = False,
+):
     from dotenv import load_dotenv
     load_dotenv()
 
@@ -212,14 +327,18 @@ def _run_pipeline_sync(
     output_root = Path(os.environ.get("OUTPUT_DIR", "./output"))
     pipeline = Pipeline(
         output_root=output_root,
-        mode=mode,           # type: ignore[arg-type]
-        mesh_backend=backend, # type: ignore[arg-type]
+        mode=mode,                 # type: ignore[arg-type]
+        mesh_backend=backend,      # type: ignore[arg-type]
+        design_model=design_model,
+        two_stage=two_stage,
     )
     result = pipeline.run(
         text_description=description,
         image_path=image_path,
         progress_callback=cb,
     )
+    if two_stage and hasattr(result, "scad_only") and result.scad_only:
+        return {"awaiting_approval": True, "scad_dir": str(result.scad_dir)}
     return result.package.output_dir
 
 

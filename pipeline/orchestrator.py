@@ -31,6 +31,8 @@ class PipelineResult:
     partition: PartitionResult
     package: PackageResult
     mode_used: str
+    scad_only: bool = False      # True when two_stage stopped after SCAD
+    scad_dir: Path | None = None
 
     @property
     def output_dir(self) -> Path:
@@ -49,12 +51,14 @@ class Pipeline:
         mesh_backend: MeshBackendName = "shape-e",
         analysis_model: str | None = None,
         design_model: str | None = None,
+        two_stage: bool = False,
     ) -> None:
         self.output_root = Path(output_root)
         self.mode = mode
         self.mesh_backend = mesh_backend
         self.analysis_model = analysis_model
         self.design_model = design_model
+        self.two_stage = two_stage
 
     def run(
         self,
@@ -92,7 +96,27 @@ class Pipeline:
         elif mode == "mesh":
             partition = self._run_mesh_mode(obj_desc, image_path, work_dir, slug, _progress)
         else:
-            partition = self._run_parametric_mode(obj_desc, work_dir, _progress, image_path=image_path)
+            result = self._run_parametric_mode(
+                obj_desc, work_dir, _progress, image_path=image_path
+            )
+            if isinstance(result, dict) and result.get("scad_only"):
+                # Two-stage: return early with SCAD path, no package yet
+                empty_partition = __import__(
+                    "pipeline.partitioner", fromlist=["PartitionResult"]
+                ).PartitionResult(parts=[], master_scad_path=work_dir / "master.scad")
+                from agents.design_agent import DesignResult
+                stub = DesignResult(master_scad_path=work_dir / "master.scad", part_modules=[])
+                from pipeline.packager import PackageResult
+                empty_pkg = PackageResult(output_dir=work_dir, stl_count=0, scad_count=0)
+                return PipelineResult(
+                    object_description=obj_desc,
+                    partition=empty_partition,
+                    package=empty_pkg,
+                    mode_used=mode,
+                    scad_only=True,
+                    scad_dir=work_dir,
+                )
+            partition = result
 
         # ── Stage 4: Package ─────────────────────────────────────────────
         _progress("package", "Assembling delivery package…")
@@ -167,7 +191,7 @@ class Pipeline:
         _progress("partition", f"{len(parts)} output file(s) from part-gen")
         return PR(parts=parts, master_scad_path=work_dir / "master.scad", warnings=result.warnings)
 
-    def _run_parametric_mode(self, obj_desc, work_dir, _progress, image_path=None) -> PartitionResult:
+    def _run_parametric_mode(self, obj_desc, work_dir, _progress, image_path=None):
         from agents.design_agent import DesignAgent
         from pipeline.partitioner import Partitioner
 
@@ -177,6 +201,10 @@ class Pipeline:
         design_agent = DesignAgent(work_dir=work_dir, model=self.design_model)
         design = design_agent.design(obj_desc, image_path=image_path)
         _progress("design", f"Design complete — {len(design.part_modules)} modules")
+
+        if self.two_stage:
+            _progress("design", "Two-stage mode — SCAD ready. Awaiting approval before rendering.")
+            return {"scad_only": True, "scad_dir": str(work_dir)}
 
         _progress("partition", "Creating per-part SCAD files…")
         partitioner = Partitioner(work_dir=work_dir)

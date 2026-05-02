@@ -215,6 +215,27 @@ textarea:focus, select:focus { border-color: var(--accent); }
   background: rgba(244, 96, 96, 0.1);
 }
 
+/* ── Toggle ── */
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.toggle-label input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+
+/* ── Approval box ── */
+.approval-box {
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: rgba(61, 214, 140, 0.08);
+  border: 1px solid var(--success);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
 /* ── Log ── */
 .log {
   background: #0b0d14;

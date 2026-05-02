@@ -15,7 +15,12 @@ const preview        = document.getElementById('preview');
 const descriptionEl  = document.getElementById('description');
 const modeEl         = document.getElementById('mode');
 const backendEl      = document.getElementById('backend');
+const designModelEl  = document.getElementById('design-model');
+const twoStageEl     = document.getElementById('two-stage');
 const generateBtn    = document.getElementById('generate-btn');
+const approvalBox    = document.getElementById('approval-box');
+const approveBtn     = document.getElementById('approve-btn');
+const rejectBtn      = document.getElementById('reject-btn');
 const inputPanel     = document.getElementById('input-panel');
 const progressPanel  = document.getElementById('progress-panel');
 const resultsPanel   = document.getElementById('results-panel');
@@ -68,6 +73,8 @@ async function startJob() {
   formData.append('description', description);
   formData.append('mode', modeEl.value);
   formData.append('backend', backendEl.value);
+  formData.append('design_model', designModelEl.value);
+  formData.append('two_stage', twoStageEl.checked ? 'true' : 'false');
   if (imageFile) formData.append('image', imageFile);
 
   try {
@@ -124,9 +131,15 @@ function handleEvent(evt) {
   appendLog(stage, message);
   activatePill(stage);
 
+  if (stage === 'approval') {
+    // Two-stage: show approval box and load SCAD files for preview
+    approvalBox.classList.remove('hidden');
+    loadFileList(currentJobId);
+  }
   if (stage === 'done') {
     markPillDone('done');
     eventSource && eventSource.close();
+    approvalBox.classList.add('hidden');
     showResultsPanel();
   }
   if (stage === 'error') {
@@ -134,6 +147,27 @@ function handleEvent(evt) {
     eventSource && eventSource.close();
   }
 }
+
+// ── Approval flow ─────────────────────────────────────────────────────────────
+approveBtn.addEventListener('click', async () => {
+  approveBtn.disabled = true;
+  approveBtn.textContent = 'Rendering…';
+  try {
+    const res = await fetch(`/api/jobs/${currentJobId}/approve-render`, { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json()).detail);
+    approvalBox.classList.add('hidden');
+  } catch (err) {
+    appendLog('error', 'Approve failed: ' + err.message);
+    approveBtn.disabled = false;
+    approveBtn.textContent = 'Approve & Render STL';
+  }
+});
+
+rejectBtn.addEventListener('click', () => {
+  approvalBox.classList.add('hidden');
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  newJobBtn.click();
+});
 
 // ── Log helpers ───────────────────────────────────────────────────────────────
 function appendLog(stage, message) {
@@ -253,6 +287,9 @@ newJobBtn.addEventListener('click', () => {
   dropZone.querySelector('p').hidden = false;
   descriptionEl.value = '';
   generateBtn.disabled = false;
+  approvalBox.classList.add('hidden');
+  approveBtn.disabled = false;
+  approveBtn.textContent = 'Approve & Render STL';
   resultsPanel.classList.add('hidden');
   inputPanel.classList.remove('hidden');
   fileListEl._firstStlPreviewed = false;

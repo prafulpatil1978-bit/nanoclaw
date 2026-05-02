@@ -138,13 +138,53 @@ any MISSING connectors before rendering.
     return content
 
 
+_SCAD_KEEP_CHARS = 300   # keep first N chars of code when truncating old writes
+
+
+def _compress_history(messages: list[dict]) -> None:
+    """Truncate large write_openscad_file code payloads in older assistant turns.
+
+    The most recent write is kept in full so the model still knows the current
+    code.  All earlier writes are replaced with a stub to avoid resending
+    thousands of tokens on every iteration.
+    """
+    # Find all assistant messages that contain write_openscad_file tool_use blocks
+    write_indices: list[tuple[int, int]] = []   # (message_idx, block_idx)
+    for mi, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for bi, block in enumerate(content):
+            btype = getattr(block, "type", None) or (block.get("type") if isinstance(block, dict) else None)
+            bname = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else None)
+            if btype == "tool_use" and bname == "write_openscad_file":
+                write_indices.append((mi, bi))
+
+    # Keep the last write intact; truncate all earlier ones
+    for mi, bi in write_indices[:-1]:
+        block = messages[mi]["content"][bi]
+        inp = getattr(block, "input", None) or (block.get("input") if isinstance(block, dict) else {})
+        code = inp.get("code", "") if isinstance(inp, dict) else ""
+        if len(code) > _SCAD_KEEP_CHARS:
+            stub = code[:_SCAD_KEEP_CHARS] + f"\n// ... [{len(code) - _SCAD_KEEP_CHARS} chars truncated to save tokens] ..."
+            if isinstance(block, dict):
+                block["input"] = {**inp, "code": stub}
+            else:
+                try:
+                    block.input = {**inp, "code": stub}
+                except AttributeError:
+                    pass
+
+
 class DesignAgent:
     MAX_ITERATIONS = 24   # extra headroom for connector re-write iteration
 
     def __init__(self, work_dir: str | Path, model: str | None = None) -> None:
         self._unified = build_client()
         self.client = self._unified
-        _requested = model or os.environ.get("DESIGN_MODEL", "claude-opus-4-7")
+        _requested = model or os.environ.get("DESIGN_MODEL", "claude-sonnet-4-6")
         self.model = resolve_model(_requested, self._unified.messages._provider)
         self.work_dir = Path(work_dir)
         self.osc = OpenSCADTools(work_dir=work_dir)
@@ -210,6 +250,7 @@ class DesignAgent:
                         result.stl_paths.append(stl_path)
 
             messages.append({"role": "user", "content": tool_results})
+            _compress_history(messages)
 
         # Collect part modules from the written master.scad
         master = self.work_dir / "master.scad"

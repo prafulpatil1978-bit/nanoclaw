@@ -47,6 +47,23 @@
         </div>
       </div>
 
+      <div class="row">
+        <div class="field">
+          <label for="design-model">Design model</label>
+          <select id="design-model">
+            <option value="claude-sonnet-4-6" selected>Sonnet 4.5 — ~$0.09/run ✓ recommended</option>
+            <option value="claude-haiku-4-5">Haiku 3.5 — ~$0.02/run (cheapest)</option>
+            <option value="claude-opus-4-7">Opus 4.5 — ~$0.44/run (best quality)</option>
+          </select>
+        </div>
+        <div class="field" style="display:flex;align-items:flex-end;padding-bottom:2px;">
+          <label class="toggle-label">
+            <input type="checkbox" id="two-stage" />
+            <span>Two-stage: review SCAD before rendering STL</span>
+          </label>
+        </div>
+      </div>
+
       <button id="generate-btn" class="btn-primary">Generate</button>
     </section>
 
@@ -62,6 +79,11 @@
         <span class="pill" data-stage="done">Done</span>
       </div>
       <div id="log" class="log"></div>
+      <div id="approval-box" class="approval-box hidden">
+        <p>✅ <strong>SCAD design is ready.</strong> Review the files below, then approve to render STL.</p>
+        <button id="approve-btn" class="btn-primary" style="margin-top:10px;">Approve &amp; Render STL</button>
+        <button id="reject-btn" class="btn-secondary" style="margin-top:10px;margin-left:8px;">Discard &amp; Start Over</button>
+      </div>
     </section>
 
     <!-- ── Results panel ── -->
