@@ -13,41 +13,38 @@ mkdir -p "$APP/Contents/Resources"
 # ── Launcher shell script (runs when icon is double-clicked) ──────────────────
 cat > "$APP/Contents/MacOS/Nanoclaw" << 'LAUNCHER'
 #!/usr/bin/env bash
-PROJ="$HOME/Desktop/n8n-setup/nanoclaw"
 PORT=7860
 
-# Use venv Python if present, otherwise fall back to system python3
-PYTHON="$PROJ/.venv/bin/python3"
-[ -x "$PYTHON" ] || PYTHON="$(which python3)"
-
-# Find a browser (Chrome → Safari → system default)
 open_browser() {
+  sleep 1   # brief pause so the browser doesn't race the server
   if open -a "Google Chrome" "http://localhost:$PORT" 2>/dev/null; then return; fi
   if open -a "Safari" "http://localhost:$PORT" 2>/dev/null; then return; fi
   open "http://localhost:$PORT"
 }
 
-# If server already running, just open browser
+# If server already running, just open browser and exit
 if curl -s "http://localhost:$PORT" > /dev/null 2>&1; then
-  open_browser; exit 0
+  open "http://localhost:$PORT"; exit 0
 fi
 
-# Launch server: explicit cd + absolute Python path inside bash -c so nohup
-# inherits the correct working directory and interpreter
-nohup bash -c "cd '$PROJ' && '$PYTHON' main.py serve --port $PORT" \
-  > /tmp/nanoclaw.log 2>&1 &
-echo $! > /tmp/nanoclaw.pid
+# Delegate to Terminal.app, which already has macOS Desktop folder access.
+# The server starts in the background (disown) then Terminal closes itself.
+osascript << 'APPLESCRIPT'
+tell application "Terminal"
+  do script "cd ~/Desktop/n8n-setup/nanoclaw && .venv/bin/python3 main.py serve --port 7860 > /tmp/nanoclaw.log 2>&1 & disown && exit"
+end tell
+APPLESCRIPT
 
-# Wait for server to be ready (up to 15 s)
-for i in $(seq 1 30); do
+# Wait up to 20 s for the server to be ready, then open the browser
+for i in $(seq 1 40); do
   sleep 0.5
   if curl -s "http://localhost:$PORT" > /dev/null 2>&1; then
-    open_browser; exit 0
+    open "http://localhost:$PORT"; exit 0
   fi
 done
 
-# Timed out — open anyway so user can see the error in the browser
-open_browser
+# Timed out — open browser anyway (error will show in the page)
+open "http://localhost:$PORT"
 LAUNCHER
 chmod +x "$APP/Contents/MacOS/Nanoclaw"
 
