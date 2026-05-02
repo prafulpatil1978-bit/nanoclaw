@@ -16,7 +16,11 @@ cat > "$APP/Contents/MacOS/Nanoclaw" << 'LAUNCHER'
 PROJ="$HOME/Desktop/n8n-setup/nanoclaw"
 PORT=7860
 
-# Find a browser (Safari → Chrome → Firefox → default)
+# Use venv Python if present, otherwise fall back to system python3
+PYTHON="$PROJ/.venv/bin/python3"
+[ -x "$PYTHON" ] || PYTHON="$(which python3)"
+
+# Find a browser (Chrome → Safari → system default)
 open_browser() {
   if open -a "Google Chrome" "http://localhost:$PORT" 2>/dev/null; then return; fi
   if open -a "Safari" "http://localhost:$PORT" 2>/dev/null; then return; fi
@@ -28,11 +32,10 @@ if curl -s "http://localhost:$PORT" > /dev/null 2>&1; then
   open_browser; exit 0
 fi
 
-cd "$PROJ"
-source .venv/bin/activate 2>/dev/null || true
-
-# Launch server in background, log to /tmp/nanoclaw.log
-nohup python3 main.py serve --port $PORT > /tmp/nanoclaw.log 2>&1 &
+# Launch server: explicit cd + absolute Python path inside bash -c so nohup
+# inherits the correct working directory and interpreter
+nohup bash -c "cd '$PROJ' && '$PYTHON' main.py serve --port $PORT" \
+  > /tmp/nanoclaw.log 2>&1 &
 echo $! > /tmp/nanoclaw.pid
 
 # Wait for server to be ready (up to 15 s)
@@ -43,7 +46,7 @@ for i in $(seq 1 30); do
   fi
 done
 
-# Timed out — open anyway and let user see the error
+# Timed out — open anyway so user can see the error in the browser
 open_browser
 LAUNCHER
 chmod +x "$APP/Contents/MacOS/Nanoclaw"
