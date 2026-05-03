@@ -19,7 +19,9 @@ cd ~/Desktop/n8n-setup/nanoclaw
 # Then open http://localhost:7860
 ```
 
-Or double-click `Nanoclaw.command` on the Desktop (starts server + opens browser).
+Keep the Terminal window open (or minimized) — closing it stops the server.
+
+Double-click `Nanoclaw.command` on the Desktop to start server + open browser automatically.
 
 ---
 
@@ -28,9 +30,10 @@ Or double-click `Nanoclaw.command` on the Desktop (starts server + opens browser
 ```
 nanoclaw/
 ├── main.py                      # CLI entry point (serve / generate commands)
-├── .env                         # API keys (OPENROUTER_API_KEY, etc.)
+├── .env                         # API keys (never commit this file)
 ├── .env.example                 # Documented template for all config options
 ├── create_desktop_app.sh        # Creates Nanoclaw.app on Mac Desktop (one-time)
+├── CLAUDE.md                    # This file — AI session reference
 ├── agents/
 │   ├── analysis_agent.py        # Stage 1: image/text → structured ObjectDescription (JSON)
 │   ├── design_agent.py          # Stage 2: ObjectDescription → OpenSCAD code (agentic loop)
@@ -70,6 +73,17 @@ nanoclaw/
 | `mesh` | Organic / decorative objects | Tripo3D / Meshy / Shap-E |
 | `auto` | Default — pipeline decides | All of the above |
 
+### Auto mode selection logic
+1. If analysis returned a `template_hint` and part-gen is installed → `partgen`
+2. If object is organic/decorative AND a valid mesh backend key is set → `mesh`
+3. Otherwise → `parametric` (default)
+
+**Organic detection keywords** (triggers mesh mode):
+`animal, character, creature, face, figure, organic, sculpture, figurine, bust, toy, cartoon, dragon, statue, person, human`
+
+Note: `miniature` and `model` were intentionally removed — they are size/type descriptors,
+not shape indicators, and were wrongly triggering mesh mode for mechanical sets.
+
 ---
 
 ## LLM / Model Configuration
@@ -79,7 +93,7 @@ nanoclaw/
 2. `ANTHROPIC_API_KEY` — direct Anthropic
 3. `USE_OLLAMA=1` — free local models (requires `ollama serve`)
 
-### Smart model routing (auto mode — default)
+### Smart model routing (auto mode — default in UI)
 The system scores each job's complexity and picks the cheapest capable model:
 
 | Stage | Condition | Model | Approx cost |
@@ -90,17 +104,17 @@ The system scores each job's complexity and picks the cheapest capable model:
 | Design | medium (3–5 parts) | Sonnet | ~$0.09 |
 | Design | high (6+ parts) | Sonnet | ~$0.09 |
 
-**Haiku via OpenRouter routes to Amazon Bedrock which does NOT support vision.**
-This is why analysis with an image always uses Sonnet.
+Complexity is scored from: `num_parts × 3 + (desc_words ÷ 20) + (features ÷ 3)`
+- low: score < 5 | medium: 5–9 | high: ≥ 10
 
-### Ollama fallback
-If the primary cloud provider returns a rate-limit or network error, the client
-automatically retries via Ollama (if `ollama serve` is running locally). Auth
-errors (wrong API key) bypass the fallback and surface immediately.
+### Automatic Ollama fallback
+If the primary cloud provider returns a rate-limit (429), timeout, or server error (5xx),
+the client silently retries via Ollama if it is running. Auth errors (401/403) bypass
+the fallback and surface immediately.
 
 ### OpenRouter BYOK (Bring Your Own Key)
-To use your own Anthropic/Perplexity key through OpenRouter:
-openrouter.ai → Settings → Integrations → Add provider key
+To route through your own Anthropic/Perplexity key:
+`openrouter.ai → Settings → Integrations → Add provider key`
 
 ### Per-agent overrides (in `.env`)
 ```
@@ -109,31 +123,11 @@ DESIGN_MODEL=claude-sonnet-4-6     # override design model
 OPENROUTER_MODEL=anthropic/claude-sonnet-4-5  # force a specific model globally
 ```
 
----
-
-## Key Design Decisions & Past Fixes
-
-### Design fidelity
-- The reference image is passed directly to the design agent (not just analysis)
-  so OpenSCAD generation matches the visual input.
-- `check_connector_pairs` tool is mandatory — blocks rendering if any part
-  lacks explicit pin+socket connector geometry.
-
-### Token cost reduction
-- History compression: old `write_openscad_file` payloads in conversation history
-  are truncated to 300 chars (keeps only the most recent full version).
-- Two-stage mode: generate SCAD → pause for user approval → render STL.
-  Enable via the "Two-stage" checkbox in the UI.
-
-### JSON robustness
-- Analysis agent strips markdown code fences (```json```) that some models add.
-- Empty response detection with actionable error message.
-
-### OpenRouter model IDs (correct format)
+### Correct OpenRouter model IDs
 ```
-anthropic/claude-3-5-haiku     # NOT claude-haiku-3-5
-anthropic/claude-sonnet-4-5    # Sonnet
-anthropic/claude-opus-4-5      # Opus
+anthropic/claude-3-5-haiku     # NOT claude-haiku-3-5 (wrong order)
+anthropic/claude-sonnet-4-5    # Sonnet 4.5
+anthropic/claude-opus-4-5      # Opus 4.5
 ```
 
 ---
@@ -152,11 +146,37 @@ anthropic/claude-opus-4-5      # Opus
 
 ---
 
+## Key Design Decisions & Past Fixes
+
+### Design fidelity
+- The reference image is passed directly to the design agent (not just analysis)
+  so OpenSCAD generation matches the visual input.
+- `check_connector_pairs` tool is mandatory — blocks rendering if any part
+  lacks explicit pin+socket connector geometry.
+
+### Token cost reduction
+- History compression: old `write_openscad_file` payloads in conversation history
+  are truncated to 300 chars (keeps only the most recent full version).
+- Two-stage mode: generate SCAD → pause for user approval → render STL.
+  Enable via the "Two-stage" checkbox in the UI.
+
+### Connector enforcement
+- Every pair of mating parts needs pin geometry on one side and socket (difference)
+  on the other.
+- `check_connector_pairs` scans `master.scad` for cylinder pins and difference holes.
+- Design agent cannot proceed to rendering if any part is flagged MISSING.
+
+### JSON robustness
+- Analysis agent strips markdown code fences (` ```json ``` `) that some models add.
+- Empty response detection with actionable error message.
+
+---
+
 ## Running Tests
 
 ```bash
 cd ~/Desktop/n8n-setup/nanoclaw
-python tests/test_pipeline.py          # all 29 offline tests
+python tests/test_pipeline.py          # 29 offline tests
 python tests/test_pipeline.py --full   # includes live API tests (needs keys)
 ```
 
@@ -166,7 +186,8 @@ python tests/test_pipeline.py --full   # includes live API tests (needs keys)
 
 ```bash
 # Pull latest changes
-cd ~/Desktop/n8n-setup/nanoclaw && git pull origin claude/ai-3d-printing-workflow-v6OD6
+cd ~/Desktop/n8n-setup/nanoclaw
+git pull origin claude/ai-3d-printing-workflow-v6OD6
 
 # Start server
 .venv/bin/python3 main.py serve
@@ -174,7 +195,7 @@ cd ~/Desktop/n8n-setup/nanoclaw && git pull origin claude/ai-3d-printing-workflo
 # Run tests
 python tests/test_pipeline.py
 
-# Recreate Desktop launcher (if needed)
+# Recreate Desktop launcher
 bash create_desktop_app.sh
 ```
 
@@ -182,12 +203,29 @@ bash create_desktop_app.sh
 
 ## Known Issues / Gotchas
 
-- **Pasting commands from chat**: the chat UI renders filenames like `main.py` as
-  hyperlinks. If you copy-paste a command, check it doesn't contain
-  `[main.py](http://main.py)` — replace with just `main.py`.
-- **Desktop app `.app` bundle**: macOS TCC blocks `.app` bundles from accessing
-  `~/Desktop`. Use `Nanoclaw.command` (double-click opens Terminal) instead.
-- **OpenRouter → Bedrock routing**: Haiku gets routed to Amazon Bedrock which
-  has no vision support. Fixed: image analysis always uses Sonnet.
-- **Server must be running**: keep the Terminal window with `main.py serve` open
-  (or minimize it). Closing Terminal stops the server.
+### Pasting commands from chat
+The chat UI renders filenames as hyperlinks (e.g. `main.py` becomes
+`[main.py](http://main.py)`). If you copy-paste a command, check for this
+and remove the markdown — it should just be `main.py`.
+
+### Desktop app macOS TCC restriction
+`.app` bundles are blocked by macOS from accessing `~/Desktop` without explicit
+privacy permission. Use `Nanoclaw.command` instead — double-click opens Terminal,
+starts the server, and opens the browser. Minimize the Terminal window after.
+
+### Haiku via Amazon Bedrock — no vision
+OpenRouter routes Haiku to Amazon Bedrock which does not support image input.
+Fixed: when the user uploads an image, analysis always uses Sonnet regardless
+of the complexity score.
+
+### Placeholder API keys treated as unset
+If `.env` still has `your_tripo3d_key_here` or `your_meshy_key_here` (from
+`.env.example`), they are now ignored — mesh mode won't be selected with fake keys.
+
+### Server must stay running
+Keep the Terminal window with `main.py serve` open (minimize it, don't close it).
+Closing Terminal stops the server.
+
+### OpenRouter model ID format
+Haiku: `anthropic/claude-3-5-haiku` — NOT `anthropic/claude-haiku-3-5`.
+The version number comes before the tier name.
