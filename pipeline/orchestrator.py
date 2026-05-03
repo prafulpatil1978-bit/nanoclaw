@@ -263,20 +263,26 @@ class Pipeline:
                 return "partgen"
 
         # ── 2. mesh: organic/decorative + backend available ─────────────
+        def _key_valid(env_var: str) -> bool:
+            v = os.environ.get(env_var, "").strip()
+            return bool(v) and "your_" not in v and "key_here" not in v
+
         backend_available = {
             "shape-e": True,
-            "tripo3d": bool(os.environ.get("TRIPO3D_API_KEY", "").strip()),
-            "meshy":   bool(os.environ.get("MESHY_API_KEY", "").strip()),
+            "tripo3d": _key_valid("TRIPO3D_API_KEY"),
+            "meshy":   _key_valid("MESHY_API_KEY"),
         }.get(self.mesh_backend, False)
 
         category = getattr(obj_desc, "part_category", "mechanical")
         is_organic = category in ("organic", "decorative")
 
         if not is_organic:
+            # Only words that unambiguously indicate organic/artistic shapes.
+            # "miniature" and "model" are size/type descriptors — too generic.
             organic_keywords = {
                 "animal", "character", "creature", "face", "figure", "organic",
                 "sculpture", "figurine", "bust", "toy", "cartoon", "dragon",
-                "robot", "miniature", "model", "statue", "person", "human",
+                "statue", "person", "human",
             }
             desc_lower = (obj_desc.description + " " + obj_desc.name).lower()
             is_organic = any(kw in desc_lower for kw in organic_keywords)

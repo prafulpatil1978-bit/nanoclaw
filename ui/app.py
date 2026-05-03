@@ -351,7 +351,13 @@ def _friendly_error(exc: Exception) -> str:
             "it should start with sk-or-v1-. Get yours at openrouter.ai → Settings → API Keys."
         )
     if "403" in msg:
-        return "Access denied (403). Check that your API key has credits at openrouter.ai."
+        # 403 can come from Tripo3D (bad key) or OpenRouter (quota)
+        if "tripo" in msg.lower():
+            return (
+                "Tripo3D API key rejected (403). "
+                "Get a free key at platform.tripo3d.ai and set TRIPO3D_API_KEY in .env."
+            )
+        return "Access denied (403). Check that your OPENROUTER_API_KEY has credits at openrouter.ai."
     if "429" in msg:
         return "Rate limit hit (429). Wait a moment and try again."
     if "TRIPO3D" in msg or "tripo" in msg.lower():
