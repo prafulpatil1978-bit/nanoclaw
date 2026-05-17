@@ -233,6 +233,169 @@ def serve(port: int, host: str, reload: bool) -> None:
 
 
 @cli.command()
+@click.option("--setup", is_flag=True, default=False, help="First-time setup: set password and configure 2FA.")
+@click.option("--port", "-p", default=7861, show_default=True, help="Port for the remote server.")
+@click.option("--no-tunnel", is_flag=True, default=False, help="Skip Cloudflare Tunnel (LAN only).")
+def remote(setup: bool, port: int, no_tunnel: bool) -> None:
+    """Secure remote desktop — view and control this Mac from any browser.
+
+    \b
+    First time:
+      python main.py remote --setup
+
+    \b
+    Every time after:
+      python main.py remote
+      Then open the printed URL on your phone/iPad/laptop.
+
+    \b
+    For internet access install cloudflared (free):
+      brew install cloudflared        (Mac)
+      # or download from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+    """
+    if setup:
+        _remote_setup()
+    else:
+        _remote_serve(port, no_tunnel)
+
+
+def _remote_setup() -> None:
+    from remote import auth as rauth
+
+    console.print(Panel.fit("[bold cyan]Nanoclaw Remote — First-time Setup[/]"))
+
+    if rauth.is_setup_done():
+        if not click.confirm("Setup already exists. Overwrite?", default=False):
+            return
+
+    ntfy_topic = click.prompt(
+        "ntfy.sh topic (unique name — push notifications with your URL)",
+        default=f"nanoclaw-{__import__('secrets').token_hex(4)}",
+    )
+    console.print(
+        f"  [dim]Install the free ntfy app and subscribe to: [cyan]ntfy.sh/{ntfy_topic}[/][/]"
+    )
+
+    password = click.prompt("Choose a password", hide_input=True, confirmation_prompt=True)
+
+    console.print("\nGenerating TOTP secret…")
+    qr_uri, totp_secret, prov_uri = rauth.run_setup(password, ntfy_topic)
+
+    # Print ASCII QR code directly in terminal
+    try:
+        import qrcode as qr_lib
+        qr = qr_lib.QRCode()
+        qr.add_data(prov_uri)
+        qr.make()
+        console.print("\n[bold]Scan this QR code with Google Authenticator / Authy:[/]\n")
+        qr.print_ascii(invert=True)
+    except Exception:
+        console.print(f"\n[dim]Provisioning URI (paste into authenticator app):[/]\n{prov_uri}\n")
+
+    console.print(f"\n[dim]Backup TOTP secret: [cyan]{totp_secret}[/][/]")
+
+    # Verify the code works before finishing
+    code = click.prompt("\nEnter the 6-digit code from your authenticator to confirm")
+    import pyotp
+    if not pyotp.TOTP(totp_secret).verify(code.strip(), valid_window=1):
+        console.print("[bold red]Code invalid.[/] Run setup again.")
+        rauth.CONFIG_PATH.unlink(missing_ok=True)
+        return
+
+    console.print(
+        Panel.fit(
+            f"[bold green]Setup complete![/]\n"
+            f"ntfy topic: [cyan]{ntfy_topic}[/]\n\n"
+            "Run [bold]python main.py remote[/] to start.",
+        )
+    )
+
+
+def _remote_serve(port: int, no_tunnel: bool) -> None:
+    import subprocess
+    import threading
+    import re
+    import httpx
+
+    from remote import auth as rauth
+
+    if not rauth.is_setup_done():
+        console.print(
+            "[bold red]Not configured.[/] Run first: [cyan]python main.py remote --setup[/]"
+        )
+        return
+
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[bold red]uvicorn not installed.[/] Run: pip install uvicorn")
+        return
+
+    local_url = f"http://localhost:{port}"
+    console.print(
+        Panel.fit(
+            f"[bold cyan]Nanoclaw Remote[/]\n"
+            f"[dim]Local: [bold]{local_url}[/][/]",
+        )
+    )
+
+    def _send_ntfy(public_url: str) -> None:
+        topic = rauth.get_ntfy_topic()
+        if not topic:
+            return
+        try:
+            httpx.post(
+                f"https://ntfy.sh/{topic}",
+                content=f"Nanoclaw Remote is live: {public_url}",
+                headers={
+                    "Title": "Nanoclaw Remote",
+                    "Priority": "default",
+                    "Tags": "computer",
+                },
+                timeout=10,
+            )
+        except Exception:
+            pass  # notification is best-effort
+
+    def _start_tunnel() -> None:
+        try:
+            proc = subprocess.Popen(
+                ["cloudflared", "tunnel", "--url", local_url],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            url_pattern = re.compile(r"https://[a-z0-9\-]+\.trycloudflare\.com")
+            for line in proc.stdout:
+                m = url_pattern.search(line)
+                if m:
+                    public_url = m.group(0)
+                    console.print(
+                        f"\n[bold green]Public URL:[/] [cyan]{public_url}[/]\n"
+                        f"[dim]Sending push notification…[/]"
+                    )
+                    _send_ntfy(public_url)
+                    break
+        except FileNotFoundError:
+            console.print(
+                "[yellow]cloudflared not found — LAN access only.[/]\n"
+                "[dim]Install: brew install cloudflared[/]"
+            )
+
+    if not no_tunnel:
+        t = threading.Thread(target=_start_tunnel, daemon=True)
+        t.start()
+
+    console.print(
+        "[dim]macOS permissions needed on first run:[/]\n"
+        "  • Screen Recording  (System Settings → Privacy → Screen Recording)\n"
+        "  • Accessibility     (System Settings → Privacy → Accessibility)\n"
+    )
+
+    uvicorn.run("remote.server:app", host="0.0.0.0", port=port, log_level="warning")
+
+
+@cli.command()
 @click.argument("image_or_description")
 def analyse(image_or_description: str) -> None:
     """Quick-analyse an image or description and print the structured spec (no design)."""

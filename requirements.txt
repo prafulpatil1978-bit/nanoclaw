@@ -13,6 +13,14 @@ click>=8.1.0
 numpy-stl>=3.0.0
 httpx>=0.27.0
 
+# ── Remote desktop ────────────────────────────────────────────────────────────
+mss>=9.0.1           # screen capture (cross-platform, Retina-aware)
+pynput>=1.7.7        # mouse + keyboard control
+pyotp>=2.9.0         # TOTP 2FA
+qrcode>=7.4.2        # QR code generation for authenticator setup
+bcrypt>=4.1.0        # password hashing
+websockets>=12.0     # WebSocket support (pulled by fastapi, pinned here)
+
 # trimesh optional deps needed for mesh slicing (print-bed splitting)
 scipy>=1.11.0
 shapely>=2.0.0

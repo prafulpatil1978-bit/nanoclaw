@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Nanoclaw Remote</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-page" class="page">
+  <div class="login-card">
+    <div class="logo">
+      <svg width="44" height="44" viewBox="0 0 44 44" fill="none">
+        <rect width="44" height="44" rx="11" fill="#00d4aa"/>
+        <path d="M12 30 L22 12 L32 30" stroke="white" stroke-width="2.8"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <circle cx="22" cy="34" r="2.8" fill="white"/>
+      </svg>
+      <h1>Nanoclaw Remote</h1>
+    </div>
+    <div id="error-msg" class="error-msg hidden"></div>
+    <form id="login-form" autocomplete="off">
+      <label for="password">Password</label>
+      <input type="password" id="password" placeholder="Enter password"
+             autocomplete="current-password" required />
+      <label for="totp">Authenticator Code</label>
+      <input type="text" id="totp" placeholder="6-digit code"
+             inputmode="numeric" maxlength="6" autocomplete="one-time-code" required />
+      <button type="submit" id="login-btn">Connect</button>
+    </form>
+  </div>
+</div>
+
+<!-- REMOTE DESKTOP -->
+<div id="desktop-page" class="page hidden">
+  <div id="toolbar">
+    <span class="toolbar-brand">Nanoclaw Remote</span>
+    <div class="toolbar-controls">
+      <div class="mode-group">
+        <button class="mode-btn active" data-mode="fit">Fit</button>
+        <button class="mode-btn" data-mode="1x">1:1</button>
+      </div>
+      <div id="status-dot" class="status-dot connected" title="Connected"></div>
+      <button id="disconnect-btn" class="disconnect-btn">Disconnect</button>
+    </div>
+  </div>
+  <div id="canvas-wrap">
+    <canvas id="screen" tabindex="0"></canvas>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
