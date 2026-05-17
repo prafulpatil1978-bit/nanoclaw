@@ -234,27 +234,33 @@ def serve(port: int, host: str, reload: bool) -> None:
 
 @cli.command()
 @click.option("--setup", is_flag=True, default=False, help="First-time setup: set password and configure 2FA.")
+@click.option("--install", is_flag=True, default=False, help="Install auto-start on login (runs once).")
+@click.option("--uninstall", is_flag=True, default=False, help="Remove auto-start on login.")
 @click.option("--port", "-p", default=7861, show_default=True, help="Port for the remote server.")
 @click.option("--no-tunnel", is_flag=True, default=False, help="Skip Cloudflare Tunnel (LAN only).")
-def remote(setup: bool, port: int, no_tunnel: bool) -> None:
+def remote(setup: bool, install: bool, uninstall: bool, port: int, no_tunnel: bool) -> None:
     """Secure remote desktop — view and control this Mac from any browser.
 
     \b
-    First time:
-      python main.py remote --setup
+    First time (3 steps, done once at the Mac):
+      python main.py remote --setup      # set password + scan QR code
+      python main.py remote --install    # auto-start on every login
+      (configure Mac: no sleep, screen recording + accessibility permissions)
 
     \b
-    Every time after:
-      python main.py remote
-      Then open the printed URL on your phone/iPad/laptop.
+    Every day after — nothing to do. Just open your bookmarked URL.
+    URL also saved to iCloud Drive and Desktop automatically.
 
     \b
-    For internet access install cloudflared (free):
-      brew install cloudflared        (Mac)
-      # or download from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+    Requires cloudflared for internet access (free):
+      brew install cloudflared
     """
     if setup:
         _remote_setup()
+    elif install:
+        _remote_install(port)
+    elif uninstall:
+        _remote_uninstall()
     else:
         _remote_serve(port, no_tunnel)
 
@@ -309,6 +315,126 @@ def _remote_setup() -> None:
             "Run [bold]python main.py remote[/] to start.",
         )
     )
+
+
+def _remote_install(port: int) -> None:
+    import subprocess
+    import sys
+
+    from remote import auth as rauth
+
+    if not rauth.is_setup_done():
+        console.print(
+            "[bold red]Run setup first:[/] [cyan]python main.py remote --setup[/]"
+        )
+        return
+
+    python_bin  = sys.executable
+    main_script = str(Path(__file__).resolve())
+    work_dir    = str(Path(__file__).parent.resolve())
+    plist_path  = Path.home() / "Library" / "LaunchAgents" / "com.nanoclaw.remote.plist"
+    log_path    = Path.home() / "Library" / "Logs" / "nanoclaw-remote.log"
+
+    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nanoclaw.remote</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{python_bin}</string>
+    <string>{main_script}</string>
+    <string>remote</string>
+    <string>--port</string>
+    <string>{port}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>{work_dir}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{log_path}</string>
+  <key>StandardErrorPath</key>
+  <string>{log_path}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>{Path.home()}</string>
+  </dict>
+</dict>
+</plist>"""
+
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    # Unload any existing instance before overwriting
+    subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+    plist_path.write_text(plist)
+
+    result = subprocess.run(
+        ["launchctl", "load", "-w", str(plist_path)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        console.print(f"[bold red]Failed to load Launch Agent:[/]\n{result.stderr or result.stdout}")
+        return
+
+    console.print(
+        Panel.fit(
+            f"[bold green]Auto-start installed![/]\n\n"
+            f"Nanoclaw Remote now starts automatically every time\n"
+            f"this Mac logs in — no action needed from you.\n\n"
+            f"Log file: [dim]{log_path}[/]\n"
+            f"To remove: [cyan]python main.py remote --uninstall[/]",
+        )
+    )
+
+
+def _remote_uninstall() -> None:
+    import subprocess
+
+    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.nanoclaw.remote.plist"
+    if not plist_path.exists():
+        console.print("[yellow]Auto-start is not installed.[/]")
+        return
+    subprocess.run(["launchctl", "unload", "-w", str(plist_path)], capture_output=True)
+    plist_path.unlink()
+    console.print("[bold green]Auto-start removed.[/] Nanoclaw Remote will no longer start on login.")
+
+
+def _save_url_everywhere(url: str) -> None:
+    """Write the public URL to iCloud Drive and Desktop so it's always findable."""
+    content = (
+        f"Nanoclaw Remote — your access link\n"
+        f"===================================\n\n"
+        f"  {url}\n\n"
+        f"Open this link in any browser (phone, iPad, laptop).\n"
+        f"Valid as long as your Mac mini stays on.\n"
+    )
+    saved = []
+
+    icloud = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+    if icloud.exists():
+        try:
+            target = icloud / "Nanoclaw Remote URL.txt"
+            target.write_text(content)
+            saved.append("iCloud Drive → Nanoclaw Remote URL.txt")
+        except Exception:
+            pass
+
+    try:
+        desktop = Path.home() / "Desktop" / "nanoclaw-remote-url.txt"
+        desktop.write_text(content)
+        saved.append("Desktop → nanoclaw-remote-url.txt")
+    except Exception:
+        pass
+
+    if saved:
+        console.print(f"[dim]URL also saved to: {' | '.join(saved)}[/]")
 
 
 def _remote_serve(port: int, no_tunnel: bool) -> None:
@@ -372,8 +498,9 @@ def _remote_serve(port: int, no_tunnel: bool) -> None:
                     public_url = m.group(0)
                     console.print(
                         f"\n[bold green]Public URL:[/] [cyan]{public_url}[/]\n"
-                        f"[dim]Sending push notification…[/]"
+                        f"[dim]Saving URL + sending push notification…[/]"
                     )
+                    _save_url_everywhere(public_url)
                     _send_ntfy(public_url)
                     break
         except FileNotFoundError:
