@@ -42,12 +42,21 @@
         <button class="mode-btn active" data-mode="fit">Fit</button>
         <button class="mode-btn" data-mode="1x">1:1</button>
       </div>
+      <button id="kb-btn" class="kb-btn" title="Mobile keyboard">⌨</button>
       <div id="status-dot" class="status-dot connected" title="Connected"></div>
       <button id="disconnect-btn" class="disconnect-btn">Disconnect</button>
     </div>
   </div>
   <div id="canvas-wrap">
-    <canvas id="screen" tabindex="0"></canvas>
+    <div id="canvas-container">
+      <canvas id="screen" tabindex="0"></canvas>
+      <canvas id="cursor"></canvas>
+    </div>
+  </div>
+  <!-- Mobile keyboard panel -->
+  <div id="kb-panel" class="hidden">
+    <textarea id="kb-input" placeholder="Type here — keystrokes go to Mac" rows="2"></textarea>
+    <button id="kb-close">Done</button>
   </div>
 </div>
 
