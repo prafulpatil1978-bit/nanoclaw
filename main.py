@@ -318,6 +318,7 @@ def _remote_setup() -> None:
 
 
 def _remote_install(port: int) -> None:
+    import shutil
     import subprocess
     import sys
 
@@ -334,6 +335,22 @@ def _remote_install(port: int) -> None:
     work_dir    = str(Path(__file__).parent.resolve())
     plist_path  = Path.home() / "Library" / "LaunchAgents" / "com.nanoclaw.remote.plist"
     log_path    = Path.home() / "Library" / "Logs" / "nanoclaw-remote.log"
+
+    # Resolve cloudflared path now (at install time) so the Launch Agent
+    # never needs to search PATH at runtime.
+    cloudflared_bin = (
+        shutil.which("cloudflared")
+        or next(
+            (p for p in ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"]
+             if Path(p).exists()),
+            None,
+        )
+    )
+    if not cloudflared_bin:
+        console.print(
+            "[yellow]Warning:[/] cloudflared not found — internet access won't work.\n"
+            "[dim]Install it with: brew install cloudflared  then re-run --install[/]"
+        )
 
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -363,7 +380,7 @@ def _remote_install(port: int) -> None:
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>{f"{Path(cloudflared_bin).parent}:" if cloudflared_bin else ""}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>{Path.home()}</string>
   </dict>
@@ -483,31 +500,57 @@ def _remote_serve(port: int, no_tunnel: bool) -> None:
         except Exception:
             pass  # notification is best-effort
 
+    def _find_cloudflared() -> str | None:
+        import shutil
+        # shutil.which uses the current process PATH
+        found = shutil.which("cloudflared")
+        if found:
+            return found
+        # Fallback: check known Homebrew install locations explicitly
+        for candidate in [
+            "/opt/homebrew/bin/cloudflared",   # Apple Silicon
+            "/usr/local/bin/cloudflared",       # Intel
+        ]:
+            if Path(candidate).exists():
+                return candidate
+        return None
+
     def _start_tunnel() -> None:
-        try:
-            proc = subprocess.Popen(
-                ["cloudflared", "tunnel", "--url", local_url],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            url_pattern = re.compile(r"https://[a-z0-9\-]+\.trycloudflare\.com")
-            for line in proc.stdout:
-                m = url_pattern.search(line)
-                if m:
-                    public_url = m.group(0)
-                    console.print(
-                        f"\n[bold green]Public URL:[/] [cyan]{public_url}[/]\n"
-                        f"[dim]Saving URL + sending push notification…[/]"
-                    )
-                    _save_url_everywhere(public_url)
-                    _send_ntfy(public_url)
-                    break
-        except FileNotFoundError:
+        import os
+        binary = _find_cloudflared()
+        if not binary:
             console.print(
                 "[yellow]cloudflared not found — LAN access only.[/]\n"
                 "[dim]Install: brew install cloudflared[/]"
             )
+            return
+        # Pass through the full shell PATH so cloudflared can find its own deps,
+        # and force line-buffered output so we don't wait for a full buffer flush.
+        env = os.environ.copy()
+        env["PATH"] = (
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:"
+            + env.get("PATH", "")
+        )
+        proc = subprocess.Popen(
+            [binary, "tunnel", "--url", local_url],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,       # line-buffered
+            env=env,
+        )
+        url_pattern = re.compile(r"https://[a-z0-9\-]+\.trycloudflare\.com")
+        for line in proc.stdout:
+            m = url_pattern.search(line)
+            if m:
+                public_url = m.group(0)
+                console.print(
+                    f"\n[bold green]Public URL:[/] [cyan]{public_url}[/]\n"
+                    f"[dim]Saving URL + sending push notification…[/]"
+                )
+                _save_url_everywhere(public_url)
+                _send_ntfy(public_url)
+                break
 
     if not no_tunnel:
         t = threading.Thread(target=_start_tunnel, daemon=True)
