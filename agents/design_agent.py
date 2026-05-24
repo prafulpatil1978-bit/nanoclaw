@@ -231,6 +231,23 @@ class DesignAgent:
             messages.append({"role": "assistant", "content": assistant_content})
 
             if response.stop_reason == "end_turn":
+                # If the model returned only text (no tool calls) before writing
+                # master.scad, it gave an architecture/planning response instead of
+                # acting. Nudge it to actually call write_openscad_file.
+                master = self.work_dir / "master.scad"
+                if not master.exists() and iteration < self.MAX_ITERATIONS - 2:
+                    messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "text",
+                            "text": (
+                                "You have not called any tools yet — master.scad does not exist. "
+                                "Do not describe your plan further. "
+                                "Call write_openscad_file RIGHT NOW to create master.scad."
+                            ),
+                        }],
+                    })
+                    continue
                 break
 
             if response.stop_reason != "tool_use":

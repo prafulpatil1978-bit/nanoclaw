@@ -124,6 +124,25 @@ class OpenSCADTools:
                 "required": ["scad_filename", "module_name", "stl_filename"],
             },
         },
+        {
+            "name": "fetch_url",
+            "description": (
+                "Fetch the plain-text content of any URL — web page, GitHub raw file, "
+                "datasheet, or design specification. Use this whenever the user supplies "
+                "a link as a reference or source material. Returns up to 4000 characters "
+                "of readable text (HTML tags stripped)."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Full http/https URL to fetch",
+                    }
+                },
+                "required": ["url"],
+            },
+        },
     ]
 
     # ------------------------------------------------------------------
@@ -261,6 +280,30 @@ class OpenSCADTools:
             )
         return f"CONNECTOR CHECK PASSED:\n{summary}"
 
+    def fetch_url(self, url: str) -> str:
+        try:
+            import httpx
+            r = httpx.get(
+                url,
+                follow_redirects=True,
+                timeout=15,
+                headers={"User-Agent": "nanoclaw/1.0"},
+            )
+            r.raise_for_status()
+            text = r.text
+            # Strip HTML tags and decode common entities
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"&amp;", "&", text)
+            text = re.sub(r"&lt;", "<", text)
+            text = re.sub(r"&gt;", ">", text)
+            text = re.sub(r"&nbsp;", " ", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > 4000:
+                return text[:4000] + f"\n... [truncated — {len(text) - 4000} more chars]"
+            return text or "(empty response)"
+        except Exception as exc:
+            return f"ERROR fetching {url}: {exc}"
+
     def dispatch(self, tool_name: str, tool_input: dict) -> str:
         if tool_name == "write_openscad_file":
             return self.write_openscad_file(**tool_input)
@@ -272,6 +315,8 @@ class OpenSCADTools:
             return self.check_connector_pairs(**tool_input)
         if tool_name == "render_part_to_stl":
             return self.render_part_to_stl(**tool_input)
+        if tool_name == "fetch_url":
+            return self.fetch_url(**tool_input)
         return f"ERROR: Unknown tool '{tool_name}'"
 
     # ------------------------------------------------------------------
